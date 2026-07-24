@@ -289,9 +289,10 @@ def _settled_days(conn, start: date, end: date, recheck_days: int) -> set[str]:
     """
     cutoff = (end - timedelta(days=recheck_days - 1)).isoformat()
     rows = conn.execute(
-        "SELECT d.date FROM daily_metrics d JOIN sleep s ON s.date = d.date "
-        "WHERE d.date BETWEEN ? AND ? AND d.date < ? "
-        "  AND d.resting_hr IS NOT NULL AND s.total_sleep_s IS NOT NULL",
+        db._ph(
+            "SELECT d.date FROM daily_metrics d JOIN sleep s ON s.date = d.date "
+            "WHERE d.date BETWEEN ? AND ? AND d.date < ? "
+            "  AND d.resting_hr IS NOT NULL AND s.total_sleep_s IS NOT NULL"),
         (start.isoformat(), end.isoformat(), cutoff),
     ).fetchall()
     return {r[0] for r in rows}
@@ -424,9 +425,10 @@ def sync_activity_details(garmin, conn, min_minutes: int = 45,
     is cheap and resumable. ``limit`` caps how many to pull in one run.
     """
     rows = conn.execute(
-        "SELECT activity_id, sport FROM activities "
-        "WHERE sport IN ('run', 'bike') AND duration_s >= ? "
-        "AND decoupling_pct IS NULL ORDER BY date DESC",
+        db._ph(
+            "SELECT activity_id, sport FROM activities "
+            "WHERE sport IN ('run', 'bike') AND duration_s >= ? "
+            "AND decoupling_pct IS NULL ORDER BY date DESC"),
         (min_minutes * 60.0,),
     ).fetchall()
     if limit:

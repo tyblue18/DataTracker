@@ -10,11 +10,15 @@ Garmin.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
+from garmin_tracker import db
 from garmin_tracker.sync import (
     _num,
     _pool_length_m,
+    _settled_days,
     _sport,
     decoupling_from_details,
     extract_streams,
@@ -270,3 +274,36 @@ def test_decoupling_from_details_skips_swims():
 def test_decoupling_from_details_none_without_usable_output():
     payload = _details(hr=[140.0] * 100)  # HR only, no power or speed
     assert decoupling_from_details(payload, "run") is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-backend query safety (?-placeholders must become %s on Postgres)
+# ---------------------------------------------------------------------------
+
+def test_ph_translates_question_marks_only_on_postgres(monkeypatch):
+    monkeypatch.setattr(db, "is_postgres", lambda: True)
+    assert db._ph("WHERE a = ? AND b = ?") == "WHERE a = %s AND b = %s"
+    monkeypatch.setattr(db, "is_postgres", lambda: False)
+    assert db._ph("WHERE a = ?") == "WHERE a = ?"
+
+
+def test_settled_days_returns_only_fully_filled_past_days(tmp_path):
+    """A regression guard for the _settled_days query (SQLite path).
+
+    Also documents the contract: a day counts as settled only when both its
+    wellness and its sleep rows are present and it is older than the recheck
+    window.
+    """
+    dbfile = tmp_path / "t.db"
+    db.init_db(dbfile)
+    with db.connect(dbfile) as conn:
+        # Fully filled, well in the past -> settled.
+        db.upsert_daily(conn, {"date": "2026-05-01", "resting_hr": 50})
+        db.upsert_sleep(conn, {"date": "2026-05-01", "total_sleep_s": 27000})
+        # Wellness but no sleep yet -> not settled.
+        db.upsert_daily(conn, {"date": "2026-05-02", "resting_hr": 51})
+
+    with db.connect(dbfile) as conn:
+        settled = _settled_days(conn, date(2026, 5, 1), date(2026, 5, 10),
+                                recheck_days=3)
+    assert settled == {"2026-05-01"}
