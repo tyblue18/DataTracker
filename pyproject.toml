@@ -40,6 +40,10 @@ web = [
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.16.0",
+    # fastapi.testclient.TestClient (used in tests/test_app.py) is built on
+    # httpx; fastapi doesn't pull it in, so it must be declared for a clean CI
+    # install to run the web tests.
+    "httpx>=0.27",
 ]
 
 [project.scripts]
