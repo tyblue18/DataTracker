@@ -8,6 +8,7 @@ Usage:
     python track.py sync --activities    # activities only (fast)
     python track.py sync --wellness      # daily wellness only
     python track.py sync-que             # pull strength workouts from Que
+    python track.py sync-details         # fetch streams for long sessions -> aerobic decoupling
     python track.py backfill             # re-parse stored data into new columns (no network)
     python track.py info                 # show what's stored
     python track.py dashboard            # launch the Streamlit dashboard
@@ -55,6 +56,26 @@ def cmd_sync_que(args) -> None:
         print(f"Que strength: {s['sessions']} sessions, {s['sets']} sets ({span}).")
     except QueUnavailable as e:
         print(f"Que strength: skipped — {e}")
+
+
+def cmd_sync_details(args) -> None:
+    """Fetch per-activity streams for long sessions and compute decoupling."""
+    from garmin_tracker.sync import MFARequired, run_sync_details
+
+    def progress(aid: str) -> None:
+        print(f"  fetching activity {aid} ...", end="\r", flush=True)
+
+    try:
+        s = run_sync_details(min_minutes=args.min_minutes, limit=args.limit,
+                             progress=progress)
+    except MFARequired as e:
+        print(f"Sync-details: {e}")
+        return
+    print(f"Sync-details: fetched {s['fetched']} of {s['eligible']} eligible "
+          f"long sessions, computed aerobic decoupling for {s['computed']}.")
+    if s["eligible"] == 0:
+        print("  (Nothing eligible — needs run/bike sessions at least "
+              f"{args.min_minutes} min long without a decoupling value yet.)")
 
 
 def cmd_backfill(args) -> None:
@@ -227,6 +248,13 @@ def cmd_info(args) -> None:
         print(f"Tagged     : {cov['tagged']} of {cov['total']} sessions have "
               f"an RPE / talk-test tag")
 
+        dur = metrics.durability_summary(acts)
+        if dur:
+            print(f"Durability : {dur['verdict']} — median decoupling "
+                  f"{dur['median_pct']:.1f}% over {dur['n']} long sessions")
+        else:
+            print("Durability : no decoupling yet - run `python track.py sync-details`.")
+
     strength = db.load_strength_sessions()
     if strength.empty:
         print("Strength   : none yet - run `python track.py sync-que` (needs Que configured).")
@@ -298,6 +326,16 @@ def main() -> None:
 
     p_que = sub.add_parser("sync-que", help="Pull strength workouts from the Que app")
     p_que.set_defaults(func=cmd_sync_que)
+
+    p_det = sub.add_parser(
+        "sync-details",
+        help="Fetch per-activity streams for long run/bike sessions and compute "
+             "aerobic decoupling (Pw:HR / Pa:HR drift)")
+    p_det.add_argument("--min-minutes", type=int, default=45,
+                       help="Only fetch sessions at least this long (default 45)")
+    p_det.add_argument("--limit", type=int, default=None,
+                       help="Cap how many activities to fetch in one run")
+    p_det.set_defaults(func=cmd_sync_details)
 
     p_dash = sub.add_parser("dashboard", help="Launch the Streamlit dashboard")
     p_dash.set_defaults(func=cmd_dashboard)

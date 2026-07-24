@@ -16,6 +16,8 @@ from garmin_tracker.sync import (
     _num,
     _pool_length_m,
     _sport,
+    decoupling_from_details,
+    extract_streams,
     parse_activity,
     parse_daily,
     parse_sleep,
@@ -215,3 +217,56 @@ def test_parse_sleep_none_when_not_a_dict():
 
 def test_parse_sleep_none_when_dto_missing():
     assert parse_sleep("2026-07-21", {"dailySleepDTO": {}}) is None
+
+
+# ---------------------------------------------------------------------------
+# extract_streams / decoupling_from_details (per-activity detail payloads)
+# ---------------------------------------------------------------------------
+
+def _details(hr, power=None, speed=None, times=None) -> dict:
+    """Build a Garmin activity-details payload (column store) from series."""
+    times = times if times is not None else list(range(len(hr)))
+    cols = [("sumElapsedDuration", times), ("directHeartRate", hr)]
+    if power is not None:
+        cols.append(("directPower", power))
+    if speed is not None:
+        cols.append(("directSpeed", speed))
+    descriptors = [{"key": k, "metricsIndex": i} for i, (k, _) in enumerate(cols)]
+    n = len(hr)
+    samples = [{"metrics": [col[r] for _, col in cols]} for r in range(n)]
+    return {"metricDescriptors": descriptors, "activityDetailMetrics": samples}
+
+
+def test_extract_streams_pulls_named_columns_in_order():
+    payload = _details(hr=[140, 141, 142], power=[200, 201, 202])
+    s = extract_streams(payload)
+    assert s["hr"] == [140, 141, 142]
+    assert s["power"] == [200, 201, 202]
+    assert s["speed"] == []          # absent stream comes back empty
+    assert s["time"] == [0, 1, 2]
+
+
+def test_extract_streams_on_empty_payload_is_all_empty():
+    s = extract_streams({})
+    assert s["hr"] == [] and s["power"] == [] and s["time"] == []
+
+
+def test_decoupling_from_details_uses_power_and_sees_drift():
+    payload = _details(power=[200.0] * 100, hr=[140.0] * 50 + [154.0] * 50)
+    d = decoupling_from_details(payload, "bike")
+    assert d is not None and d > 5
+
+
+def test_decoupling_from_details_falls_back_to_speed():
+    payload = _details(speed=[3.3] * 100, hr=[140.0] * 50 + [154.0] * 50)
+    assert decoupling_from_details(payload, "run") > 5
+
+
+def test_decoupling_from_details_skips_swims():
+    payload = _details(speed=[1.2] * 100, hr=[130.0] * 100)
+    assert decoupling_from_details(payload, "swim") is None
+
+
+def test_decoupling_from_details_none_without_usable_output():
+    payload = _details(hr=[140.0] * 100)  # HR only, no power or speed
+    assert decoupling_from_details(payload, "run") is None

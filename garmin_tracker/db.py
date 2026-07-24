@@ -291,6 +291,21 @@ def upsert_activity(conn, row: dict) -> None:
     _upsert(conn, "activities", row)
 
 
+def update_activity_metrics(conn, activity_id, fields: dict) -> None:
+    """Update only the given columns of one activity, leaving the rest intact.
+
+    Used by the details sync to write back a computed column (e.g.
+    ``decoupling_pct``) without re-supplying the whole row.
+    """
+    if not fields:
+        return
+    assignments = ", ".join(f"{c}=?" for c in fields)
+    conn.execute(
+        _ph(f"UPDATE activities SET {assignments} WHERE activity_id=?"),
+        [*(_encode(v) for v in fields.values()), activity_id],
+    )
+
+
 def upsert_daily(conn, row: dict) -> None:
     _upsert(conn, "daily_metrics", row)
 

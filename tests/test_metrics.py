@@ -643,6 +643,83 @@ def test_no_stale_flag_when_data_is_current():
 
 
 # ---------------------------------------------------------------------------
+# Aerobic decoupling / durability
+# ---------------------------------------------------------------------------
+
+def test_decoupling_is_near_zero_for_a_perfectly_steady_session():
+    output = [200.0] * 100
+    hr = [150.0] * 100
+    assert metrics.aerobic_decoupling(output, hr) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_decoupling_is_positive_when_hr_drifts_up_at_constant_output():
+    # Output held flat; HR rises 10% in the second half -> EF falls -> +decoupling.
+    output = [200.0] * 100
+    hr = [140.0] * 50 + [154.0] * 50
+    d = metrics.aerobic_decoupling(output, hr)
+    assert d == pytest.approx((1 - 140 / 154) * 100, abs=0.2)  # ~9.1%
+    assert d > 5
+
+
+def test_decoupling_is_negative_when_hr_settles():
+    output = [200.0] * 100
+    hr = [154.0] * 50 + [140.0] * 50
+    assert metrics.aerobic_decoupling(output, hr) < 0
+
+
+def test_decoupling_none_below_minimum_pairs():
+    assert metrics.aerobic_decoupling([200.0] * 5, [150.0] * 5) is None
+
+
+def test_decoupling_ignores_zero_and_missing_samples():
+    # Padding with zeros/None must not drag the efficiency factor around.
+    output = [200.0] * 100 + [0.0] * 20
+    hr = [150.0] * 100 + [0.0] * 20
+    assert metrics.aerobic_decoupling(output, hr) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_decoupling_splits_on_time_when_sampling_is_uneven():
+    # Dense sampling early, sparse late: an index split would misplace the
+    # midpoint, a time split puts it at the real halfway second.
+    times = list(range(0, 100)) + list(range(100, 300, 20))
+    output = [200.0] * len(times)
+    hr = [150.0 if t < 150 else 165.0 for t in times]
+    d = metrics.aerobic_decoupling(output, hr, times=times)
+    assert d > 0
+
+
+def _acts_with_decoupling(values, start="2026-06-01"):
+    acts = make_activities([(f"{start[:8]}{d:02d}", "run", 100)
+                            for d in range(1, len(values) + 1)])
+    acts["decoupling_pct"] = list(values)
+    return acts
+
+
+def test_durability_summary_verdicts_track_the_threshold():
+    durable = metrics.durability_summary(
+        _acts_with_decoupling([2.0, 3.0, 4.0]), through=pd.Timestamp("2026-06-15"))
+    assert durable["verdict"] == "Durable" and durable["status"] == "good"
+
+    drifty = metrics.durability_summary(
+        _acts_with_decoupling([9.0, 11.0, 13.0]), through=pd.Timestamp("2026-06-15"))
+    assert drifty["verdict"] == "High drift" and drifty["status"] == "serious"
+    assert drifty["median_pct"] == 11.0
+    assert drifty["n"] == 3
+
+
+def test_durability_summary_none_without_stored_decoupling():
+    acts = make_activities([("2026-06-01", "run", 100)])  # no decoupling_pct column
+    assert metrics.durability_summary(acts) is None
+
+
+def test_high_decoupling_raises_a_durability_flag():
+    acts = _acts_with_decoupling([9.0, 11.0, 13.0], start="2026-06-01")
+    flags = metrics.training_flags(acts, pd.DataFrame(), pd.DataFrame(),
+                                   through=pd.Timestamp("2026-06-05"))
+    assert any("drifts" in f["title"] for f in flags)
+
+
+# ---------------------------------------------------------------------------
 # summary_stats
 # ---------------------------------------------------------------------------
 

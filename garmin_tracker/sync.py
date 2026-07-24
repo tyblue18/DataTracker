@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 
-from . import db
+from . import db, metrics
 from .client import connect
 
 # Map Garmin's granular activity typeKeys onto the three Ironman disciplines.
@@ -134,6 +134,74 @@ def sync_activities(garmin, start: date, end: date, conn) -> int:
         db.upsert_activity(conn, row)
         count += 1
     return count
+
+
+# --------------------------------------------------------------------------- #
+# Per-activity streams -> aerobic decoupling
+# --------------------------------------------------------------------------- #
+# The activity summary carries no time series, so aerobic decoupling (how far
+# output-to-HR drifts across a long session) needs the detail payload — one extra
+# request per activity. Garmin returns it as a column store: a list of metric
+# descriptors naming each column, and a row per sample. We pull the columns we
+# need by name and hand them to metrics.aerobic_decoupling.
+
+# Garmin's descriptor keys for the streams we care about.
+_STREAM_KEYS = {"hr": "directHeartRate", "power": "directPower",
+                "speed": "directSpeed", "time": "sumElapsedDuration"}
+
+
+def extract_streams(details: dict) -> dict:
+    """Pull aligned hr / power / speed / time series from a details payload.
+
+    Returns a dict of lists (missing streams come back empty). Defensive by
+    design — descriptor order and which streams exist both vary by device.
+    """
+    d = details or {}
+    idx = {}
+    for desc in d.get("metricDescriptors") or []:
+        if isinstance(desc, dict) and desc.get("key") is not None:
+            idx[desc["key"]] = desc.get("metricsIndex")
+    samples = d.get("activityDetailMetrics") or []
+
+    def series(key: str) -> list:
+        i = idx.get(key)
+        if i is None:
+            return []
+        out = []
+        for s in samples:
+            m = s.get("metrics") if isinstance(s, dict) else None
+            out.append(m[i] if (m is not None and i < len(m)) else None)
+        return out
+
+    streams = {name: series(k) for name, k in _STREAM_KEYS.items()}
+    if not streams["time"]:  # older payloads name it differently
+        streams["time"] = series("directTimestamp")
+    return streams
+
+
+def _usable(series: list, minimum: int = 20) -> bool:
+    return sum(1 for v in series if isinstance(v, (int, float)) and v and v > 0) >= minimum
+
+
+def decoupling_from_details(details: dict, sport: str) -> float | None:
+    """Aerobic decoupling for a run/bike detail payload, or None.
+
+    Prefers power (a direct output measure, immune to GPS pacing noise) and falls
+    back to speed. Swims and untyped activities are skipped — decoupling is a
+    steady-endurance measure and foot/pedal output is what it reads.
+    """
+    if sport not in ("run", "bike"):
+        return None
+    s = extract_streams(details)
+    if not s["hr"]:
+        return None
+    if _usable(s["power"]):
+        output = s["power"]
+    elif _usable(s["speed"]):
+        output = s["speed"]
+    else:
+        return None
+    return metrics.aerobic_decoupling(output, s["hr"], times=s["time"] or None)
 
 
 # --------------------------------------------------------------------------- #
@@ -344,4 +412,52 @@ def run_sync(days: int = 30, activities_only: bool = False,
             f"({start} -> {end})",
             datetime.now().isoformat(timespec="seconds"),
         )
+    return summary
+
+
+def sync_activity_details(garmin, conn, min_minutes: int = 45,
+                          limit: int | None = None, progress=None) -> dict:
+    """Fetch streams for long run/bike sessions and store their decoupling.
+
+    Only sessions at least ``min_minutes`` long that don't already have a
+    decoupling value are fetched — one request each, newest first — so re-running
+    is cheap and resumable. ``limit`` caps how many to pull in one run.
+    """
+    rows = conn.execute(
+        "SELECT activity_id, sport FROM activities "
+        "WHERE sport IN ('run', 'bike') AND duration_s >= ? "
+        "AND decoupling_pct IS NULL ORDER BY date DESC",
+        (min_minutes * 60.0,),
+    ).fetchall()
+    if limit:
+        rows = rows[:limit]
+
+    fetched = computed = 0
+    for r in rows:
+        aid, sport = r[0], r[1]
+        if progress:
+            progress(str(aid))
+        details = _safe(garmin.get_activity_details, aid)
+        fetched += 1
+        if not details:
+            continue
+        dec = decoupling_from_details(details, sport)
+        if dec is not None:
+            db.update_activity_metrics(conn, aid, {"decoupling_pct": round(dec, 2)})
+            computed += 1
+    return {"eligible": len(rows), "fetched": fetched, "computed": computed}
+
+
+def run_sync_details(min_minutes: int = 45, limit: int | None = None,
+                     mfa_prompt=input, progress=None) -> dict:
+    """Log in, compute aerobic decoupling for eligible sessions, store it."""
+    db.init_db()
+    garmin = connect(mfa_prompt=mfa_prompt)
+    with db.connect() as conn:
+        summary = sync_activity_details(
+            garmin, conn, min_minutes=min_minutes, limit=limit, progress=progress)
+        db.log_sync(conn, "sync-details",
+                    f"{summary['computed']} decoupling values from "
+                    f"{summary['fetched']} fetches",
+                    datetime.now().isoformat(timespec="seconds"))
     return summary

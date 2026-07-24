@@ -746,6 +746,95 @@ def monotony_strain(activities: pd.DataFrame, through: pd.Timestamp | None = Non
 
 
 # ---------------------------------------------------------------------------
+# Aerobic durability — Pw:HR / Pa:HR decoupling (Friel)
+# ---------------------------------------------------------------------------
+# Over a long steady effort, heart rate creeps up even as output (power, or pace)
+# holds — cardiac drift. Decoupling quantifies it: split the session in half,
+# take each half's efficiency factor (mean output / mean HR), and measure how far
+# the second half's fell. Under ~5% is the usual marker of "aerobically durable
+# for this duration"; a larger gap says the aerobic base isn't yet built for how
+# long you're going. For Ironman-length racing this durability is the whole game,
+# which is why a single long-session average hides it and the split reveals it.
+
+# Below this (percent) a long session is treated as aerobically durable.
+DECOUPLING_THRESHOLD = 5.0
+
+
+def aerobic_decoupling(output, hr, times=None, min_pairs: int = 20) -> float | None:
+    """Pw:HR / Pa:HR decoupling for one steady session, as a percentage.
+
+    ``output`` is power or speed, ``hr`` the aligned heart-rate samples; pass
+    ``times`` (elapsed seconds) to split at the true time midpoint rather than by
+    sample count, which matters when recording is not evenly spaced. Returns the
+    drop in efficiency factor from the first half to the second:
+    ``(EF1 - EF2) / EF1 * 100``. Positive means HR drifted up relative to output
+    (the durability signal); negative means it held or improved. None when there
+    are too few valid paired samples to be meaningful.
+    """
+    o = np.asarray(list(output), dtype="float64")
+    h = np.asarray(list(hr), dtype="float64")
+    n = min(len(o), len(h))
+    if n == 0:
+        return None
+    o, h = o[:n], h[:n]
+    t = np.asarray(list(times), dtype="float64")[:n] if times is not None else None
+
+    valid = np.isfinite(o) & np.isfinite(h) & (o > 0) & (h > 0)
+    if t is not None:
+        valid &= np.isfinite(t)
+    o, h = o[valid], h[valid]
+    t = t[valid] if t is not None else None
+    if len(o) < min_pairs:
+        return None
+
+    if t is not None and t[-1] > t[0]:
+        first = t <= (t[0] + (t[-1] - t[0]) / 2.0)
+    else:
+        first = np.zeros(len(o), dtype=bool)
+        first[: len(o) // 2] = True
+    second = ~first
+    if first.sum() < 2 or second.sum() < 2:
+        return None
+
+    ef1 = o[first].mean() / h[first].mean()
+    ef2 = o[second].mean() / h[second].mean()
+    if ef1 <= 0:
+        return None
+    return float((ef1 - ef2) / ef1 * 100.0)
+
+
+def durability_summary(activities: pd.DataFrame, recent_days: int = 42,
+                       through: pd.Timestamp | None = None) -> dict | None:
+    """Median aerobic decoupling of recent long sessions, with a verdict.
+
+    Reads the stored ``decoupling_pct`` (populated by ``track.py sync-details``),
+    so it returns None until that has been run. ``recent_days`` scopes it to
+    current form, falling back to all stored values when the recent window is
+    empty.
+    """
+    if activities.empty or "decoupling_pct" not in activities.columns:
+        return None
+    df = activities[["date", "decoupling_pct"]].copy()
+    df["decoupling_pct"] = pd.to_numeric(df["decoupling_pct"], errors="coerce")
+    df = df.dropna(subset=["decoupling_pct"])
+    if df.empty:
+        return None
+    df["date"] = pd.to_datetime(df["date"])
+    asof = pd.Timestamp(through).normalize() if through is not None else _today()
+    recent = df[df["date"] > asof - pd.Timedelta(days=recent_days)]
+    use = recent if not recent.empty else df
+    med = float(use["decoupling_pct"].median())
+    if med <= DECOUPLING_THRESHOLD:
+        verdict, status = "Durable", "good"
+    elif med <= 2 * DECOUPLING_THRESHOLD:
+        verdict, status = "Some drift", "warning"
+    else:
+        verdict, status = "High drift", "serious"
+    return {"median_pct": round(med, 1), "n": int(len(use)),
+            "verdict": verdict, "status": status}
+
+
+# ---------------------------------------------------------------------------
 # Discipline balance
 # ---------------------------------------------------------------------------
 # Ironman is three sports, and the classic failure mode of self-coached training
@@ -1314,6 +1403,15 @@ def training_flags(activities: pd.DataFrame, daily: pd.DataFrame,
                 "Every day looking the same, at volume, is the combination "
                 "Foster linked to illness and overreaching. Make easy days easier "
                 "and hard days harder.")
+
+    # --- Aerobic durability (decoupling over long sessions) ---
+    dur = durability_summary(activities, through=asof)
+    if dur and dur["status"] in ("warning", "serious"):
+        add(dur["status"], f"Output drifts {dur['median_pct']:.0f}% on long sessions",
+            f"Heart rate climbs {dur['median_pct']:.0f}% against your output over "
+            f"the back half of your long sessions (median of {dur['n']}). Above "
+            "~5% points at an aerobic base not yet built for that duration — the "
+            "fix is more steady, easy-paced volume, not more intensity.")
 
     flags.sort(key=lambda f: _SEVERITY_ORDER.get(f["status"], 9))
     return flags
