@@ -409,6 +409,15 @@ def _intensity(tid: dict | None, by_sport: pd.DataFrame, wk: pd.DataFrame,
             f'doesn\'t hold up — wrist sensors lock onto foot-strike cadence. '
             f'Those are scored from power. Open the Streamlit app to relabel a '
             f'session by hand.</div></div>')
+    rows = [("Measured", f'{tid["hours"]:.1f} h'),
+            ("Score", f'{tid["score"]:.0f} / 100'),
+            ("Nearest model", tid["nearest_model"])]
+    # Treff's Polarization Index: a number ≥ 2.00 is a genuinely polarised block.
+    # Only shown when defined (needs some time above threshold).
+    pi = tid.get("polarization_index")
+    if pi is not None:
+        rows.append(("Polarization index",
+                     f'{pi:.2f} ({"polarised" if tid["polarized"] else "not polarised"})'))
     side = card(
         f'{kicker("This window")}'
         f'<div style="display:flex;align-items:baseline;gap:8px;margin-top:10px">'
@@ -420,9 +429,7 @@ def _intensity(tid: dict | None, by_sport: pd.DataFrame, wk: pd.DataFrame,
         + "".join(f'<div style="display:flex;justify-content:space-between">'
                   f'<span>{k}</span><span style="color:{viz.INK};font-weight:600">'
                   f'{v}</span></div>'
-                  for k, v in [("Measured", f'{tid["hours"]:.1f} h'),
-                               ("Score", f'{tid["score"]:.0f} / 100'),
-                               ("Nearest model", tid["nearest_model"])])
+                  for k, v in rows)
         + f'</div><div class="muted" style="margin-top:14px">Scored from {src_line}. '
           f'Both models that hold up put ~75–80% of time easy.</div>{hr_note}',
         small=True)

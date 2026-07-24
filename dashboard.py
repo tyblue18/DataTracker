@@ -453,6 +453,15 @@ with tabs[2]:
             c = viz.status_color(tid["status"])
             by_src = tid.get("sessions_by_source") or {}
             src_line = " · ".join(f"{v} {k}" for k, v in by_src.items())
+            # Treff's Polarization Index — shown only when it is defined (needs
+            # some time above threshold). ≥ 2.00 marks a genuinely polarised block.
+            pi = tid.get("polarization_index")
+            pi_row = "" if pi is None else (
+                f'<div style="display:flex;justify-content:space-between">'
+                f'<span>Polarization index</span>'
+                f'<span style="color:{viz.INK};font-weight:600">'
+                f'{pi:.2f} ({"polarised" if tid["polarized"] else "not polarised"})'
+                f'</span></div>')
             md(f"""<div class="card-sm"><div class="kicker">This window</div>
               <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px">
                 <span class="display" style="font-size:40px;color:{c}">
@@ -467,6 +476,7 @@ with tabs[2]:
                   <span style="color:{viz.INK};font-weight:600">{tid['score']:.0f} / 100</span></div>
                 <div style="display:flex;justify-content:space-between"><span>Nearest model</span>
                   <span style="color:{viz.INK};font-weight:600">{tid['nearest_model']}</span></div>
+                {pi_row}
               </div>
               <div class="muted" style="margin-top:14px">Scored from {src_line}.
                 Both models that hold up put ~75–80% of time easy.</div>
@@ -687,9 +697,16 @@ with tabs[3]:
           <div class="muted" style="margin-top:8px">{note}</div></div>""")
 
     vo2 = day["vo2max_run"].dropna() if "vo2max_run" in day else pd.Series(dtype=float)
-    if not vo2.empty:
-        st.caption(f"Latest running VO₂max estimate: **{vo2.iloc[-1]:.1f}** — "
-                   "wearable estimates move far more slowly than real fitness.")
+    vo2b = day["vo2max_bike"].dropna() if "vo2max_bike" in day else pd.Series(dtype=float)
+    if not vo2.empty or not vo2b.empty:
+        parts = []
+        if not vo2.empty:
+            parts.append(f"running **{vo2.iloc[-1]:.1f}**")
+        if not vo2b.empty:
+            parts.append(f"cycling **{vo2b.iloc[-1]:.1f}**")
+        st.caption("Latest VO₂max estimate: " + " · ".join(parts) + " — wearable "
+                   "estimates move far more slowly than real fitness, and the "
+                   "run and bike engines are tracked separately.")
 
 # =============================================================================
 # 5. DISCIPLINES
