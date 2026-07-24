@@ -1,0 +1,8 @@
+# Normalize line endings: LF in the repo, native in the working tree.
+* text=auto eol=lf
+
+# Binary / non-diffable files
+*.db binary
+*.png binary
+*.jpg binary
+*.ico binary

@@ -1,0 +1,46 @@
+# --- Secrets & credentials --------------------------------------------------
+.env
+.env.*
+!.env.example
+.garmintokens/
+*.garmintokens
+.streamlit/secrets.toml
+
+# --- Personal data (never commit real health/training data) -----------------
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+design_handoff/sample_data.json
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Deploy -----------------------------------------------------------------
+.vercel/
+
+# --- Editors & tooling ------------------------------------------------------
+.claude/
+.idea/
+.vscode/
+*.swp
+
+# --- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db

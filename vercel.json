@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{tests/**,design_handoff/**,build/**,data/**,.garmintokens/**,**/__pycache__/**,**/*.pyc,*.db}"
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/sync",
+      "schedule": "0 6,18 * * *"
+    }
+  ]
+}
