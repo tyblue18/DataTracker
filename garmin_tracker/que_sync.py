@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import db
 from .config import settings
@@ -159,7 +159,7 @@ def sync_strength(data: object | None = None) -> dict:
         for s in set_rows:
             db.upsert_strength_set(conn, {k: v for k, v in s.items() if k in set_cols})
         db.log_sync(conn, "que", f"{len(session_rows)} sessions, {len(set_rows)} sets",
-                    datetime.now(timezone.utc).isoformat())
+                    datetime.now(UTC).isoformat())
 
     dates = [s["date"] for s in session_rows if s["date"]]
     return {

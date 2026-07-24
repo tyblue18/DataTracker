@@ -6,10 +6,9 @@ This is the same auth model the Taxuspt/garmin_mcp server uses.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import logging
 import tempfile
+from pathlib import Path
 
 from garminconnect import (
     Garmin,

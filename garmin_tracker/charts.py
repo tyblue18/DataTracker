@@ -258,8 +258,8 @@ def hrv_chart(hb: pd.DataFrame, w: int = 540, h: int = 205) -> str:
     band = s.dropna(subset=["lower", "upper"])
     if not band.empty:
         idx = [s.index.get_loc(i) for i in band.index]
-        up = [(xs(i), ys(v)) for i, v in zip(idx, band["upper"])]
-        dn = [(xs(i), ys(v)) for i, v in zip(idx, band["lower"])][::-1]
+        up = [(xs(i), ys(v)) for i, v in zip(idx, band["upper"], strict=False)]
+        dn = [(xs(i), ys(v)) for i, v in zip(idx, band["lower"], strict=False)][::-1]
         d = ("M" + "L".join(f"{x:.1f},{y:.1f}" for x, y in up + dn) + "Z")
         out.append(f'<path d="{d}" fill="rgba(138,154,106,.22)"/>')
 

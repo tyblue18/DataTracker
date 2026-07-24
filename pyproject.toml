@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garmin-ironman-tracker"
+version = "0.1.0"
+description = "Sync Garmin Connect data and track the trends that matter for Ironman training."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Tanishq Somani" }]
+keywords = ["garmin", "triathlon", "ironman", "training", "cycling", "running", "swimming"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Private :: Do Not Upload",
+]
+
+# Kept in sync with requirements.txt (which the README references for the
+# quick-start install). This table is the source of truth for `pip install .`.
+dependencies = [
+    "garminconnect>=0.2.25",
+    "garth>=0.5.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "streamlit>=1.49.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+# Hosted web service (Vercel). Not needed for local CLI / Streamlit use.
+web = [
+    "fastapi>=0.117.1",
+    "python-multipart>=0.0.9",
+    "psycopg[binary]>=3.2.0",
+]
+# Everything needed to run the test suite and the linter.
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.16.0",
+]
+
+[project.scripts]
+track = "track:main"
+
+[tool.setuptools]
+packages = ["garmin_tracker"]
+py-modules = ["app", "dashboard", "track"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# A curated, widely-used baseline: pyflakes + pycodestyle + isort + pyupgrade
+# + bugbear + comprehensions + simplify. Deliberately *excludes* the
+# flake8-blind-except (BLE) and flake8-datetimez (DTZ) families: this app
+# parses Garmin's drifting payloads defensively (broad `except` is intentional)
+# and works in the athlete's local time on purpose (naive datetimes are correct
+# here), so those rules would fight the design rather than improve it.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    # Line length is owned by `ruff format`; the formatter won't break long
+    # HTML/CSS string literals in report.py, and manually wrapping them hurts
+    # readability more than it helps.
+    "E501",
+    # charts.py assigns tiny local `xs`/`ys` coordinate-scaler lambdas that are
+    # used on the very next lines; nested `def`s would be noisier, not clearer.
+    "E731",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests build wide fixture frames and re-import helpers per test for locality.
+"tests/*" = ["E402"]

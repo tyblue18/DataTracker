@@ -11,7 +11,6 @@ front-ends can't drift apart on colour or geometry.
 from __future__ import annotations
 
 import html
-import json
 from datetime import date, datetime
 
 import numpy as np
@@ -149,7 +148,7 @@ def _header(stale: int | None, race: dict | None, show_sync: bool) -> str:
     sync_btn = ""
     if show_sync:
         sync_btn = ('<button class="btn" id="syncBtn">⟳ Sync now</button>'
-                    f'<span id="syncMsg" class="muted"></span>')
+                    '<span id="syncMsg" class="muted"></span>')
     return f"""
 <div style="display:flex;align-items:center;justify-content:space-between;
      gap:16px;padding:26px 0 10px;flex-wrap:wrap">
@@ -337,7 +336,7 @@ def _load(ff: pd.DataFrame, rr: dict | None, ms: pd.DataFrame) -> str:
 def _intensity(tid: dict | None, by_sport: pd.DataFrame, wk: pd.DataFrame,
                hq: dict | None) -> str:
     if tid is None:
-        return (f'<section id="intensity"><div class="h-sec">Intensity</div>'
+        return ('<section id="intensity"><div class="h-sec">Intensity</div>'
                 + card('<div class="muted">No time-in-zone data yet.</div>')
                 + "</section>")
     sh = tid["shares"]
@@ -542,9 +541,9 @@ def _disciplines(bal: pd.DataFrame, wv: pd.DataFrame) -> str:
         f'<span style="width:10px;height:10px;border-radius:3px;'
         f'background:{viz.SPORT_COLORS[s]}"></span>{viz.SPORT_NAMES[s]}</span>'
         for s in viz.SPORT_ORDER)
-    return (f'<section id="disciplines"><div class="h-sec">Disciplines</div>'
-            f'<div class="sub">Is the swim / bike / run mix right for race day?</div>'
-            f'<div style="margin-top:16px">' + card(
+    return ('<section id="disciplines"><div class="h-sec">Disciplines</div>'
+            '<div class="sub">Is the swim / bike / run mix right for race day?</div>'
+            '<div style="margin-top:16px">' + card(
                 f'<div style="display:flex;justify-content:space-between;'
                 f'align-items:baseline;margin-bottom:14px;gap:12px;flex-wrap:wrap">'
                 f'{kicker("Share of training time · last 28 days")}'

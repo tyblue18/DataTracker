@@ -155,6 +155,34 @@ def test_intensity_summary_classifies_pyramidal():
     assert metrics.intensity_summary(acts)["label"] == "Pyramidal"
 
 
+def test_polarization_index_flags_the_polarised_model():
+    # Same 80/5/15-ish split the classifier calls "Polarised".
+    acts = with_zones(make_activities([("2026-01-01", "run", 100)]),
+                      {1: 400, 2: 400, 3: 50, 4: 100, 5: 50})
+    tid = metrics.intensity_summary(acts)
+    assert tid["polarization_index"] >= metrics.POLARIZATION_THRESHOLD
+    assert tid["polarized"] is True
+
+
+def test_polarization_index_below_two_for_pyramidal():
+    # A pyramidal split scores below the 2.0 line despite a big easy base.
+    acts = with_zones(make_activities([("2026-01-01", "run", 100)]),
+                      {1: 400, 2: 380, 3: 190, 4: 30, 5: 0})
+    tid = metrics.intensity_summary(acts)
+    assert tid["polarization_index"] < metrics.POLARIZATION_THRESHOLD
+    assert tid["polarized"] is False
+
+
+def test_polarization_index_undefined_without_high_intensity():
+    # No time above threshold: the index is not defined (a sub-threshold block
+    # is "not polarised", which the qualitative label already conveys).
+    acts = with_zones(make_activities([("2026-01-01", "run", 100)]),
+                      {1: 400, 2: 400, 3: 200, 4: 0, 5: 0})
+    tid = metrics.intensity_summary(acts)
+    assert tid["polarization_index"] is None
+    assert tid["polarized"] is False
+
+
 def test_published_models_score_well():
     for low, _mod, high in metrics.TID_MODELS.values():
         assert metrics.intensity_score(low, high) >= 88
@@ -442,6 +470,39 @@ def test_hrv_baseline_handles_missing_column():
     assert metrics.hrv_baseline(pd.DataFrame({"date": []})).empty
 
 
+def test_hrv_cv_is_a_positive_percentage_for_a_varying_series():
+    rng = np.random.default_rng(3)
+    hb = metrics.hrv_baseline(_daily_hrv(60 + rng.normal(0, 4, 120)))
+    cv = hb["cv"].dropna()
+    assert not cv.empty
+    assert (cv > 0).all()
+    # A ~4/60 dispersion is a few percent, nowhere near a collapse.
+    assert not hb["cv_collapsed"].iloc[-1]
+
+
+def test_hrv_cv_collapse_is_flagged_when_variability_goes_flat():
+    """A suppressed mean whose day-to-day variation flatlines is the collapse."""
+    rng = np.random.default_rng(4)
+    values = np.concatenate([60 + rng.normal(0, 4, 100),   # normal variability
+                             45 + rng.normal(0, 0.1, 14)])  # low and near-constant
+    hb = metrics.hrv_baseline(_daily_hrv(values))
+    assert hb["status"].iloc[-1] == "suppressed"
+    assert hb["cv_collapsed"].iloc[-1]
+
+
+def test_hrv_collapse_raises_the_overreaching_flag_above_a_plain_suppression():
+    rng = np.random.default_rng(5)
+    values = np.concatenate([60 + rng.normal(0, 4, 100),
+                             45 + rng.normal(0, 0.1, 14)])
+    daily = _daily_hrv(values)
+    flags = metrics.training_flags(
+        pd.DataFrame(), daily, pd.DataFrame(), through=daily["date"].max())
+    titles = [f["title"] for f in flags]
+    assert any("variability collapsing" in t for t in titles)
+    nfor = next(f for f in flags if "variability collapsing" in f["title"])
+    assert nfor["status"] == "critical"
+
+
 # ---------------------------------------------------------------------------
 # Monotony
 # ---------------------------------------------------------------------------
@@ -535,8 +596,8 @@ def test_progression_series_has_all_pillars():
 
 def test_unknown_philosophy_falls_back_to_balanced():
     acts = make_activities([(f"2026-01-{d:02d}", "run", 100) for d in range(1, 29)])
-    kw = dict(daily=_blank_daily(), sleep=pd.DataFrame(),
-              through=pd.Timestamp("2026-03-01"))
+    kw = {"daily": _blank_daily(), "sleep": pd.DataFrame(),
+          "through": pd.Timestamp("2026-03-01")}
     a = metrics.progression_series(acts, philosophy="nonsense", **kw)
     b = metrics.progression_series(acts, philosophy="balanced", **kw)
     pd.testing.assert_frame_equal(a, b)
@@ -579,3 +640,27 @@ def test_no_stale_flag_when_data_is_current():
     flags = metrics.training_flags(acts, pd.DataFrame(), pd.DataFrame(),
                                    through=pd.Timestamp("2026-03-02"))
     assert not any("days old" in f["title"] for f in flags)
+
+
+# ---------------------------------------------------------------------------
+# summary_stats
+# ---------------------------------------------------------------------------
+
+def test_summary_stats_surfaces_both_run_and_bike_vo2max():
+    acts = make_activities([("2026-01-01", "run", 100), ("2026-01-02", "bike", 100)])
+    daily = pd.DataFrame({
+        "date": pd.to_datetime(["2026-01-01", "2026-01-02"]),
+        "resting_hr": [48.0, 47.0],
+        "vo2max_run": [54.0, 55.0],
+        "vo2max_bike": [58.0, 59.0],
+    })
+    stats = metrics.summary_stats(acts, daily)
+    assert stats["vo2max_run"] == 55.0
+    assert stats["vo2max_bike"] == 59.0
+
+
+def test_summary_stats_bike_vo2max_is_none_when_absent():
+    acts = make_activities([("2026-01-01", "run", 100)])
+    daily = pd.DataFrame({"date": pd.to_datetime(["2026-01-01"]),
+                          "vo2max_run": [54.0]})
+    assert metrics.summary_stats(acts, daily)["vo2max_bike"] is None

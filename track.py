@@ -47,7 +47,7 @@ def cmd_sync(args) -> None:
 
 
 def cmd_sync_que(args) -> None:
-    from garmin_tracker.que_sync import sync_strength, QueUnavailable
+    from garmin_tracker.que_sync import QueUnavailable, sync_strength
 
     try:
         s = sync_strength()

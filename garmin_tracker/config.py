@@ -33,7 +33,7 @@ class Settings:
     que_export_path: Path       # exported Que localStorage JSON (ironmanCoreDB_v2)
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(cls) -> Settings:
         db_path = _resolve(os.getenv("GARMIN_DB", "data/garmin.db"))
         tokenstore = _resolve(os.getenv("GARMINTOKENS", ".garmintokens"))
         # Make sure the parent folders exist.

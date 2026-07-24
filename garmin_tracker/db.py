@@ -23,6 +23,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import UTC
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -392,9 +393,9 @@ def load_strength_sets(db_path: Path | None = None) -> pd.DataFrame:
 
 def save_tokens(files: dict[str, str], db_path: Path | None = None) -> int:
     """Persist the contents of a garth token directory."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     init_db(db_path)
     with connect(db_path) as conn:
         for name, content in files.items():

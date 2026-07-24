@@ -85,7 +85,7 @@ def pill(text: str, color: str) -> str:
 # Header
 # =============================================================================
 if activities.empty and daily.empty:
-    md(f'<div class="h-sec">Progression</div>')
+    md('<div class="h-sec">Progression</div>')
     st.warning("No data yet. Run `python track.py sync` to pull your Garmin "
                "history, then reload.")
     st.stop()
@@ -278,7 +278,7 @@ with tabs[0]:
             ("consistency", "Consistency", "Sessions in, gaps out"),
             ("intensity", "Intensity", "Easy/hard split vs the models"),
         ]
-        for col, (key, label, note) in zip(st.columns(5), meta):
+        for col, (key, label, note) in zip(st.columns(5), meta, strict=False):
             v = prog["pillars"].get(key)
             null = v is None or not np.isfinite(v)
             c = viz.MUTED if null else viz.band_color(v)
@@ -321,7 +321,7 @@ with tabs[0]:
                   f"{proj['ctl_race'] - proj['ctl_now']:+.0f}", viz.INK),
                  ("Form at race", f"{proj['tsb_race']:+.0f}", proj["verdict"],
                   viz.status_color(proj["status"]))]
-        for col, (k, v, s, c) in zip(cols, tiles):
+        for col, (k, v, s, c) in zip(cols, tiles, strict=False):
             with col:
                 md(f"""<div class="card-sm"><div class="kicker">{k}</div>
                   <div class="display" style="font-size:34px;margin-top:8px;

@@ -446,7 +446,9 @@ def zone_time(activities: pd.DataFrame, source: str = "hr",
             dur = pd.to_numeric(df.get("duration_s"), errors="coerce")
             total = measured.where(measured.notna() & (measured > 0), dur)
             for i in range(1, 6):
-                weights = feel.map(lambda f: FEEL_TO_ZONE.get(f, {}).get(i, 0.0))
+                # i is bound as a default arg so the closure captures this
+                # iteration's zone, not the loop's final value.
+                weights = feel.map(lambda f, i=i: FEEL_TO_ZONE.get(f, {}).get(i, 0.0))
                 chosen.loc[tagged, i] = (total * weights)[tagged]
             src = np.where(tagged, "tagged", src)
         df["zone_source"] = src
@@ -504,6 +506,33 @@ def _classify_tid(low: float, moderate: float, high: float) -> tuple[str, str]:
     return "Pyramidal", "good"
 
 
+# Threshold from Treff et al. (2019): a Polarization Index at or above 2.0 marks a
+# genuinely polarised distribution, below it a non-polarised (pyramidal/threshold)
+# one. This is the quantitative counterpart to the qualitative _classify_tid label.
+POLARIZATION_THRESHOLD = 2.0
+
+
+def polarization_index(low: float, moderate: float, high: float) -> float | None:
+    """Treff et al. (2019) Polarization Index for a low/moderate/high split.
+
+    ``PI = log10((Z1 / Z2) x Z3 x 100)`` with the three bands as fractions of
+    total time. PI >= 2.0 is polarised; below it is not. The index is only
+    defined when there is time-in-zone above threshold, so it returns None when
+    ``high`` is zero (a purely sub-threshold block is not "polarised", it is
+    simply not polarised — the qualitative label already says so). A moderate
+    share of zero is the *most* polarised case rather than an error, so it is
+    nudged off zero instead of dividing by it.
+
+    Reference: Treff et al., "The Polarization-Index: A Simple Calculation to
+    Distinguish Polarized From Non-polarized Training Intensity Distribution",
+    Front. Physiol. 2019.
+    """
+    if not all(np.isfinite(v) for v in (low, moderate, high)) or high <= 0:
+        return None
+    moderate = max(moderate, 1e-6)  # the maximally-polarised end, not a div-by-zero
+    return float(math.log10((low / moderate) * high * 100.0))
+
+
 def intensity_summary(activities: pd.DataFrame, source: str = "hr",
                       tags: pd.DataFrame | None = None) -> dict | None:
     """Overall training-intensity distribution with a model name and verdict."""
@@ -520,11 +549,14 @@ def intensity_summary(activities: pd.DataFrame, source: str = "hr",
     zones = {f"z{i}": float(df[f"z{i}_s"].sum(min_count=1) or 0) / total
              for i in range(1, 6)}
     used = df.loc[df["zone_total_s"] > 0, "zone_source"].value_counts().to_dict()
+    pi = polarization_index(shares["low"], shares["moderate"], shares["high"])
     return {
         "label": label, "status": status, "hours": total / 3600.0,
         "shares": shares, "zone_shares": zones,
         "source": source, "sessions_by_source": used,
         "score": round(intensity_score(shares["low"], shares["high"]), 1),
+        "polarization_index": round(pi, 2) if pi is not None else None,
+        "polarized": bool(pi is not None and pi >= POLARIZATION_THRESHOLD),
         "nearest_model": min(
             TID_MODELS,
             key=lambda m: sum(abs(TID_MODELS[m][i] - s) for i, s in
@@ -613,15 +645,36 @@ def run_efficiency(activities: pd.DataFrame, aerobic_only: bool = False,
 # noise swamps the signal. It compares a 7-day rolling mean of ln(HRV) against
 # the athlete's own recent baseline, with a "normal range" of +/- 0.5 SD (the
 # smallest worthwhile change). Inside the band = normal, below it = suppressed.
+#
+# A second signal rides alongside the mean: the *coefficient of variation* (CV,
+# SD/mean of the last 7 days). Plews & Buchheit describe a specific danger
+# pattern — the baseline falling while the CV *collapses* toward zero — as the
+# autonomic signature of non-functional overreaching. The daily readings going
+# quiet and uniform is not calm; it is the system losing its capacity to vary.
+# Watching the mean alone misses it, because a suppressed mean with a healthy CV
+# is ordinary hard-training fatigue, while a suppressed mean with a collapsed CV
+# is the one worth interrupting for.
+
+# How far below its own baseline the CV has to fall before it counts as
+# "collapsed". 0.6 => the last week's variability is under 60% of what is normal
+# for this athlete.
+CV_COLLAPSE_RATIO = 0.6
+
 
 def hrv_baseline(daily: pd.DataFrame, roll: int = 7, base_window: int = 60,
                  swc_mult: float = 0.5) -> pd.DataFrame:
-    """ln(HRV) 7-day mean with its personal normal range.
+    """ln(HRV) 7-day mean with its personal normal range, plus CV of the raw HRV.
 
-    Returns: date, hrv, ln_hrv, roll, baseline, swc, lower, upper, status, z.
+    Returns: date, hrv, ln_hrv, roll, baseline, swc, lower, upper, status, z,
+    cv, cv_baseline, cv_collapsed.
+
+    ``cv`` is the coefficient of variation (%) of the raw overnight HRV over the
+    last ``roll`` days; ``cv_baseline`` is its own longer-run normal; and
+    ``cv_collapsed`` marks days where the CV has dropped below
+    ``CV_COLLAPSE_RATIO`` of that baseline — the variability-collapse signal.
     """
     cols = ["date", "hrv", "ln_hrv", "roll", "baseline", "swc",
-            "lower", "upper", "status", "z"]
+            "lower", "upper", "status", "z", "cv", "cv_baseline", "cv_collapsed"]
     if daily is None or daily.empty or "hrv_overnight" not in daily.columns:
         return pd.DataFrame(columns=cols)
     s = daily[["date", "hrv_overnight"]].dropna().copy()
@@ -645,6 +698,16 @@ def hrv_baseline(daily: pd.DataFrame, roll: int = 7, base_window: int = 60,
         [out["roll"] > out["upper"], out["roll"] < out["lower"]],
         ["elevated", "suppressed"], default="normal")
     out.loc[out["roll"].isna() | out["baseline"].isna(), "status"] = "unknown"
+
+    # CV of the raw HRV (not the log): SD / mean over the rolling window, as a
+    # percentage. Computed on the raw ms so it carries the dispersion Plews
+    # tracks, independent of the log-scale mean above.
+    minp = max(2, roll // 2)
+    cv_mean = out["hrv"].rolling(roll, min_periods=minp).mean()
+    cv_sd = out["hrv"].rolling(roll, min_periods=minp).std()
+    out["cv"] = (cv_sd / cv_mean.replace(0, np.nan)) * 100.0
+    out["cv_baseline"] = out["cv"].rolling(base_window, min_periods=roll).mean()
+    out["cv_collapsed"] = (out["cv"] < CV_COLLAPSE_RATIO * out["cv_baseline"]).fillna(False)
     return out
 
 
@@ -796,7 +859,8 @@ def race_projection(activities: pd.DataFrame, race_date, taper_days: int = 14,
 def summary_stats(activities: pd.DataFrame, daily: pd.DataFrame) -> dict:
     """Headline numbers for the dashboard top row."""
     out = {"total_sessions": 0, "total_hours": 0.0, "ctl": None,
-           "tsb": None, "resting_hr": None, "vo2max_run": None}
+           "tsb": None, "resting_hr": None, "vo2max_run": None,
+           "vo2max_bike": None}
     if not activities.empty:
         out["total_sessions"] = int(len(activities))
         out["total_hours"] = round(activities["duration_s"].sum() / 3600.0, 1)
@@ -806,12 +870,20 @@ def summary_stats(activities: pd.DataFrame, daily: pd.DataFrame) -> dict:
             tsb = ff["tsb"].iloc[-1]
             out["tsb"] = round(float(tsb), 1) if pd.notna(tsb) else None
     if not daily.empty:
-        rhr = daily["resting_hr"].dropna()
-        if not rhr.empty:
-            out["resting_hr"] = round(float(rhr.iloc[-1]), 0)
-        vo2 = daily["vo2max_run"].dropna()
-        if not vo2.empty:
-            out["vo2max_run"] = round(float(vo2.iloc[-1]), 1)
+        if "resting_hr" in daily.columns:
+            rhr = daily["resting_hr"].dropna()
+            if not rhr.empty:
+                out["resting_hr"] = round(float(rhr.iloc[-1]), 0)
+        if "vo2max_run" in daily.columns:
+            vo2 = daily["vo2max_run"].dropna()
+            if not vo2.empty:
+                out["vo2max_run"] = round(float(vo2.iloc[-1]), 1)
+        # The bike engine's VO2max is collected too, and for a triathlete it is
+        # half the aerobic picture — surface it rather than leaving it in the DB.
+        if "vo2max_bike" in daily.columns:
+            vo2b = daily["vo2max_bike"].dropna()
+            if not vo2b.empty:
+                out["vo2max_bike"] = round(float(vo2b.iloc[-1]), 1)
     return out
 
 
@@ -998,7 +1070,7 @@ def progression_series(
         tot = roll.sum(axis=1).replace(0, np.nan)
         intensity = pd.Series(
             [intensity_score(lo, hi) for lo, hi in
-             zip(roll["low_s"] / tot, roll["high_s"] / tot)], index=idx)
+             zip(roll["low_s"] / tot, roll["high_s"] / tot, strict=True)], index=idx)
 
     # --- Composite (weighted mean over available pillars) ---
     pillars = {"fitness": fitness, "efficiency": efficiency, "recovery": recovery,
@@ -1213,10 +1285,24 @@ def training_flags(activities: pd.DataFrame, daily: pd.DataFrame,
     if not hb.empty:
         cur = hb.dropna(subset=["z"])
         if not cur.empty and cur.iloc[-1]["status"] == "suppressed":
-            add("serious", "HRV below your normal range",
-                f"7-day average is {abs(cur.iloc[-1]['z']):.1f} SWC below "
-                "baseline. The HRV-guided protocols swap intensity for easy "
-                "aerobic work until it returns to the band.")
+            last = cur.iloc[-1]
+            below = abs(last["z"])
+            if bool(last.get("cv_collapsed")):
+                # Suppressed *and* the day-to-day variability has gone flat:
+                # the pattern Plews & Buchheit tie to non-functional
+                # overreaching, and a stronger signal than a low mean alone.
+                add("critical", "HRV suppressed and variability collapsing",
+                    f"7-day average is {below:.1f} SWC below baseline and its "
+                    "day-to-day variation has fallen well under your normal — "
+                    "the autonomic pattern linked to non-functional "
+                    "overreaching. This is a rest signal, not a push-through "
+                    "one: several days of easy aerobic work or genuine recovery "
+                    "until both the average and its variability return.")
+            else:
+                add("serious", "HRV below your normal range",
+                    f"7-day average is {below:.1f} SWC below baseline. The "
+                    "HRV-guided protocols swap intensity for easy aerobic work "
+                    "until it returns to the band.")
 
     # --- Monotony ---
     ms = monotony_strain(activities, through=asof)
@@ -1331,7 +1417,7 @@ def strength_index(sets: pd.DataFrame, freq: str = "W") -> pd.DataFrame:
     if best.empty:
         return pd.DataFrame(columns=["date", "index"])
     parts = []
-    for ex, grp in best.groupby("exercise"):
+    for _ex, grp in best.groupby("exercise"):
         grp = grp.sort_values("date")
         base = float(grp["best_e1rm"].head(2).mean())
         if base <= 0:
