@@ -263,13 +263,17 @@ def cron_sync_details(request: Request) -> JSONResponse:
 
 @app.get("/api/health")
 def health() -> JSONResponse:
-    counts, err = {}, None
+    counts, err, tokens = {}, None, None
     try:
         db.init_db()
         acts = db.load_activities()
         counts = {"activities": int(len(acts)),
                   "last_activity": (str(pd.to_datetime(acts["date"]).max().date())
                                     if not acts.empty else None)}
+        # Inside the same guard as everything else: load_tokens now raises on an
+        # unreachable database rather than reporting an empty store, and health
+        # is the endpoint you check precisely when that is what's wrong.
+        tokens = len(db.load_tokens())
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
     return JSONResponse({
@@ -279,7 +283,7 @@ def health() -> JSONResponse:
         "password_set": bool(APP_PASSWORD),
         "sync_available": bool(APP_PASSWORD) or not IS_PROD,
         "cron_secret_set": bool(CRON_SECRET),
-        "garmin_tokens": len(db.load_tokens()),
+        "garmin_tokens": tokens,
         "counts": counts,
         "error": err,
     })

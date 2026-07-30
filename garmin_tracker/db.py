@@ -435,10 +435,31 @@ def save_tokens(files: dict[str, str], db_path: Path | None = None) -> int:
 
 
 def load_tokens(db_path: Path | None = None) -> dict[str, str]:
-    """Token files previously saved, or an empty dict."""
+    """Token files previously saved, or an empty dict.
+
+    "No tokens yet" and "the database is unreachable" are different answers and
+    must not look alike: the first is the normal state before seeding, the
+    second is a broken connection string. Only a missing table is swallowed —
+    everything else is raised, so a typo in DATABASE_URL reports itself instead
+    of quietly presenting as an empty token store.
+    """
     try:
         with connect(db_path) as conn:
             rows = conn.execute("SELECT name, content FROM garmin_tokens").fetchall()
-    except Exception:
-        return {}
+    except Exception as e:
+        if _is_missing_table(e):
+            return {}
+        raise
     return {r[0]: r[1] for r in rows}
+
+
+def _is_missing_table(exc: Exception) -> bool:
+    """True when the failure is just 'garmin_tokens doesn't exist yet'.
+
+    Matched on the message rather than the exception class so it holds for both
+    backends without importing psycopg at module scope: sqlite3 raises
+    OperationalError("no such table: ..."), psycopg UndefinedTable("relation
+    ... does not exist").
+    """
+    msg = str(exc).lower()
+    return "no such table" in msg or "does not exist" in msg

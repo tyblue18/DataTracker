@@ -328,3 +328,17 @@ def test_details_sync_does_not_run_inside_the_activity_sync(client, monkeypatch)
     monkeypatch.setattr(mod, "_run_sync", lambda days: {"activities": 1})
     c.post("/api/sync")
     assert called == []
+
+
+def test_health_reports_a_broken_database_rather_than_zero_tokens(client, monkeypatch):
+    """The endpoint you check when the database is the thing that's wrong."""
+    c, mod = client
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(mod.db, "load_tokens", boom)
+    body = c.get("/api/health").json()
+    assert body["ok"] is False
+    assert body["garmin_tokens"] is None      # not 0 — we don't know
+    assert "connection refused" in body["error"]

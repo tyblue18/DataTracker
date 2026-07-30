@@ -307,3 +307,41 @@ def test_settled_days_returns_only_fully_filled_past_days(tmp_path):
         settled = _settled_days(conn, date(2026, 5, 1), date(2026, 5, 10),
                                 recheck_days=3)
     assert settled == {"2026-05-01"}
+
+
+# ---------------------------------------------------------------------------
+# Token store error reporting
+# ---------------------------------------------------------------------------
+
+def test_missing_table_reads_as_an_empty_token_store(tmp_path):
+    """Before seeding, no tokens is the normal answer, not a failure."""
+    fresh = tmp_path / "empty.db"
+    import sqlite3
+    sqlite3.connect(fresh).close()          # a database with no schema at all
+    assert db.load_tokens(fresh) == {}
+
+
+def test_an_unreachable_database_raises_instead_of_reporting_zero(monkeypatch):
+    """A bad connection string must not masquerade as 'you haven't seeded yet'."""
+    import pytest
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(db, "connect", boom)
+    with pytest.raises(RuntimeError, match="connection refused"):
+        db.load_tokens()
+
+
+def test_missing_table_is_recognised_for_both_backends():
+    assert db._is_missing_table(Exception("no such table: garmin_tokens"))
+    assert db._is_missing_table(
+        Exception('relation "garmin_tokens" does not exist'))
+    assert not db._is_missing_table(Exception("connection refused"))
+    assert not db._is_missing_table(Exception("password authentication failed"))
+
+
+def test_tokens_round_trip_through_the_store(tmp_path):
+    p = tmp_path / "t.db"
+    db.save_tokens({"garmin_tokens.json": '{"a": 1}'}, p)
+    assert db.load_tokens(p) == {"garmin_tokens.json": '{"a": 1}'}

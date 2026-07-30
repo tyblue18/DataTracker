@@ -166,7 +166,15 @@ def cmd_tokens(args) -> None:
 
     target = "Postgres" if db.is_postgres() else f"SQLite ({settings.db_path})"
     if args.check:
-        stored = db.load_tokens()
+        try:
+            stored = db.load_tokens()
+        except Exception as e:
+            # Distinguished from an empty store on purpose: "0 tokens" sends you
+            # off re-seeding, when the actual problem is that nothing can reach
+            # the database at all.
+            print(f"Could not read tokens from {target}.\n"
+                  f"  {type(e).__name__}: {e}")
+            raise SystemExit(1) from e
         print(f"{target}: {len(stored)} token file(s) stored"
               + (f" — {', '.join(sorted(stored))}" if stored else ""))
         return
