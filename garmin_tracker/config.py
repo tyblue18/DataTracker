@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,20 @@ def _resolve(path_str: str) -> Path:
     return p if p.is_absolute() else ROOT / p
 
 
+def _try_mkdir(path: Path) -> Path:
+    """Create a directory, tolerating a read-only filesystem.
+
+    Serverless hosts mount the deployment read-only — only ``/tmp`` is
+    writable. Neither of these directories is used there (storage is Postgres
+    and the Garmin tokens live in a table), but this runs at import time, so an
+    uncaught ``OSError`` would take the whole app down before it served a
+    single request rather than failing later and locally.
+    """
+    with suppress(OSError):
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @dataclass(frozen=True)
 class Settings:
     email: str | None
@@ -36,9 +51,9 @@ class Settings:
     def load(cls) -> Settings:
         db_path = _resolve(os.getenv("GARMIN_DB", "data/garmin.db"))
         tokenstore = _resolve(os.getenv("GARMINTOKENS", ".garmintokens"))
-        # Make sure the parent folders exist.
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        tokenstore.mkdir(parents=True, exist_ok=True)
+        # Make sure the parent folders exist. Best-effort: see _try_mkdir.
+        _try_mkdir(db_path.parent)
+        _try_mkdir(tokenstore)
         return cls(
             email=os.getenv("GARMIN_EMAIL"),
             password=os.getenv("GARMIN_PASSWORD"),

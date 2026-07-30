@@ -1,0 +1,16 @@
+# Local development. Never installed on Vercel — see requirements.txt.
+#
+#   python -m pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# Tests and linting.
+pytest>=8.0.0
+ruff>=0.16.0
+# fastapi.testclient.TestClient is built on httpx, which fastapi doesn't pull in.
+httpx>=0.27
+
+# The optional Streamlit app (dashboard.py), which adds interactive session
+# tagging. Local only: it needs a long-lived websocket session that a
+# serverless function can't host. The hosted page is app.py + report.py.
+streamlit>=1.49.0

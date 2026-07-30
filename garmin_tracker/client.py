@@ -121,9 +121,15 @@ def connect(mfa_prompt=input, persist: bool | None = None) -> Garmin:
         code = mfa_prompt("Enter the Garmin MFA code sent to you: ").strip()
         garmin.resume_login(result2, code)
 
-    # Cache tokens for next time.
-    Path(tokenstore).mkdir(parents=True, exist_ok=True)
-    garmin.client.dump(tokenstore)
+    # Cache tokens for next time. On a read-only serverless filesystem the
+    # normal store can't be created, so fall back to a temp directory — the
+    # database copy below is what actually persists there.
+    out = Path(tokenstore)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        out = Path(tempfile.mkdtemp(prefix="garmintokens-"))
+    garmin.client.dump(str(out))
     if persist:
-        _persist_tokenstore(Path(tokenstore))
+        _persist_tokenstore(out)
     return garmin

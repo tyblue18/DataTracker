@@ -19,8 +19,9 @@ jobs:
           cache: pip
 
       - name: Install
-        # web extras pull in FastAPI, which tests/test_app.py imports.
-        run: pip install -e ".[dev,web]"
+        # FastAPI (imported by tests/test_app.py) is a runtime dependency now;
+        # the dev extra adds pytest, ruff and httpx on top.
+        run: pip install -e ".[dev]"
 
       - name: Lint
         run: ruff check .

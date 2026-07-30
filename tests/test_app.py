@@ -11,6 +11,10 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 
+# The page's script always references the button by id; only the element
+# itself is conditional, so match the markup rather than the bare name.
+SYNC_BUTTON = 'id="syncBtn"'
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -23,6 +27,7 @@ def client(monkeypatch):
     monkeypatch.setenv("APP_PASSWORD", "hunter2")
     monkeypatch.setenv("CRON_SECRET", "cronsecret")
     monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("PUBLIC_DASHBOARD", raising=False)  # exercise the default
     import app as app_module
     importlib.reload(app_module)
     return TestClient(app_module.app, base_url="https://testserver"), app_module
@@ -38,13 +43,45 @@ def open_client(monkeypatch):
     return TestClient(app_module.app)
 
 
+@pytest.fixture
+def locked_client(monkeypatch):
+    """PUBLIC_DASHBOARD=0 — the whole page behind the password."""
+    monkeypatch.setenv("APP_PASSWORD", "hunter2")
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("PUBLIC_DASHBOARD", "0")
+    import app as app_module
+    importlib.reload(app_module)
+    return TestClient(app_module.app, base_url="https://testserver")
+
+
 # --- Auth -------------------------------------------------------------------
 
-def test_index_redirects_to_login_when_signed_out(client):
+def test_dashboard_is_public_without_signing_in(client):
+    """The whole point of hosting it: a link a friend can open."""
     c, _ = client
-    r = c.get("/", follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"] == "/login"
+    r = c.get("/")
+    assert r.status_code == 200
+    assert "Progression" in r.text
+
+
+def test_public_page_hides_the_sync_button(client):
+    """Visitors must not be able to spend the Garmin rate limit."""
+    c, _ = client
+    assert SYNC_BUTTON not in c.get("/").text
+    c.post("/login", data={"password": "hunter2"})
+    assert SYNC_BUTTON in c.get("/").text
+
+
+def test_public_page_is_cacheable_and_the_owners_is_not(client):
+    c, _ = client
+    assert "public" in c.get("/").headers["cache-control"]
+    c.post("/login", data={"password": "hunter2"})
+    assert "no-store" in c.get("/").headers["cache-control"]
+
+
+def test_page_is_not_search_indexable(client):
+    c, _ = client
+    assert c.get("/").headers["x-robots-tag"] == "noindex, nofollow"
 
 
 def test_login_with_correct_password_sets_a_cookie(client):
@@ -61,21 +98,38 @@ def test_login_rejects_a_wrong_password(client):
     assert "Wrong password" in r.text
 
 
+def test_logout_clears_the_cookie(client):
+    c, _ = client
+    c.post("/login", data={"password": "hunter2"})
+    assert SYNC_BUTTON in c.get("/").text
+    c.get("/logout")
+    assert SYNC_BUTTON not in c.get("/").text
+
+
 def test_api_requires_auth(client):
     c, _ = client
     assert c.post("/api/sync").status_code == 401
     assert c.get("/api/snapshot").status_code == 401
 
 
-def test_production_without_a_password_refuses_to_serve(monkeypatch):
-    """A public URL with no password would expose everything — fail closed."""
+def test_production_without_a_password_serves_but_disables_sync(monkeypatch):
+    """No password means nobody can prove ownership — reads stay open."""
     monkeypatch.delenv("APP_PASSWORD", raising=False)
     monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("PUBLIC_DASHBOARD", raising=False)
     import app as app_module
     importlib.reload(app_module)
-    r = TestClient(app_module.app).get("/")
-    assert r.status_code == 503
-    assert "APP_PASSWORD" in r.text
+    c = TestClient(app_module.app)
+    assert c.get("/").status_code == 200
+    assert SYNC_BUTTON not in c.get("/").text
+    assert c.post("/api/sync").status_code == 401
+    assert c.get("/api/health").json()["sync_available"] is False
+
+
+def test_public_dashboard_can_be_turned_off(locked_client):
+    r = locked_client.get("/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/login"
 
 
 def test_local_use_needs_no_password(open_client):

@@ -23,8 +23,8 @@ This is a **standalone app** — it talks to Garmin Connect directly through the
 ## Quick start
 
 ```bash
-# 1. Install dependencies
-python -m pip install -r requirements.txt
+# 1. Install dependencies (requirements.txt alone is the deploy-only subset)
+python -m pip install -r requirements-dev.txt
 
 # 2. Add your Garmin credentials (and your race date)
 cp .env.example .env        # then edit .env

@@ -1,3 +1,9 @@
+# Runtime dependencies — this is exactly what gets installed on Vercel.
+#
+# Vercel's Python runtime reads this file (and pyproject.toml), so keep the two
+# in sync and keep anything local-only out of both. See requirements-dev.txt
+# for the test suite and the optional Streamlit app.
+
 # Garmin data access (same library the Taxuspt/garmin_mcp server uses under the hood)
 garminconnect>=0.2.25
 garth>=0.5.0
@@ -6,18 +12,14 @@ garth>=0.5.0
 pandas>=2.2.0
 numpy>=1.26.0
 
-# Dashboard. Charts are hand-built SVG (garmin_tracker/charts.py), so there is
-# no plotting-library dependency.
-# >=1.49 for the width="stretch" widget API used throughout dashboard.py.
-streamlit>=1.49.0
-
 # Config
 python-dotenv>=1.0.1
 
-# Tests
-pytest>=8.0.0
-
-# Web service (Vercel deployment). Not needed for local CLI/Streamlit use.
+# The dashboard, as a web service. Charts are hand-built SVG
+# (garmin_tracker/charts.py) and the page is rendered by garmin_tracker/report.py,
+# so there is no plotting-library dependency.
 fastapi>=0.117.1
 python-multipart>=0.0.9
+
+# Postgres, for deployment. Unused locally, where storage falls back to SQLite.
 psycopg[binary]>=3.2.0

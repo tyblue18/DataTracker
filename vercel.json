@@ -3,7 +3,7 @@
   "functions": {
     "app.py": {
       "maxDuration": 300,
-      "excludeFiles": "{tests/**,design_handoff/**,build/**,data/**,.garmintokens/**,**/__pycache__/**,**/*.pyc,*.db}"
+      "excludeFiles": "{tests/**,design_handoff/**,build/**,data/**,.garmintokens/**,dashboard.py,**/__pycache__/**,**/*.pyc,*.db}"
     }
   },
   "crons": [

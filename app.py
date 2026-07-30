@@ -2,17 +2,25 @@
 
 Routes
 ------
-GET  /              the rendered dashboard
-POST /api/sync      pull the latest data from Garmin, then reload
-GET  /api/snapshot  the same numbers as JSON
-GET  /api/cron/sync scheduled sync (Vercel Cron)
-GET  /api/health    liveness + configuration check
+GET  /              the rendered dashboard          (public by default)
+POST /api/sync      pull the latest data from Garmin  (owner only)
+GET  /api/snapshot  the same numbers as JSON          (owner only)
+GET  /api/cron/sync scheduled sync (Vercel Cron)      (CRON_SECRET)
+GET  /api/health    liveness + configuration check    (public, no data)
 
 Auth
 ----
-Set ``APP_PASSWORD`` and every route asks for it once, storing a signed cookie.
-Without it the app refuses to start in production — this page is your training
-history and a button that spends your Garmin rate limit.
+The dashboard is meant to be shared — a link you can send a friend, no login.
+So reads are open and *writes* are not: the two things worth protecting are
+the sync button, which spends a finite Garmin API rate limit, and the raw JSON
+snapshot. Both sit behind ``APP_PASSWORD``, which you enter once on your own
+device and which is then remembered in a cookie.
+
+Set ``PUBLIC_DASHBOARD=0`` to put the whole page behind that password instead.
+
+Without ``APP_PASSWORD`` set in production there is no way to prove you're the
+owner, so the sync button simply isn't offered — the page still serves, and the
+cron job still keeps it fresh.
 """
 
 from __future__ import annotations
@@ -34,6 +42,9 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 CRON_SECRET = os.getenv("CRON_SECRET")
 SYNC_DAYS = int(os.getenv("SYNC_DAYS", "7"))
 IS_PROD = bool(os.getenv("VERCEL"))
+# Reading the dashboard needs no password; set this to 0 to lock the page down
+# to the owner as well.
+PUBLIC_DASHBOARD = os.getenv("PUBLIC_DASHBOARD", "1").lower() not in ("0", "false", "no")
 COOKIE = "progression_auth"
 
 
@@ -44,8 +55,12 @@ def _token() -> str:
 
 
 def _authed(cookie: str | None) -> bool:
+    """Is this request from the owner?
+
+    Gates the sync button and the JSON snapshot, never the page itself.
+    """
     if not APP_PASSWORD:
-        # No password set: fine locally, refused in production.
+        # No password to check against: trusted locally, nobody in production.
         return not IS_PROD
     return bool(cookie) and secrets.compare_digest(cookie, _token())
 
@@ -53,6 +68,11 @@ def _authed(cookie: str | None) -> bool:
 def _guard(cookie: str | None) -> None:
     if not _authed(cookie):
         raise HTTPException(status_code=401, detail="Not signed in.")
+
+
+# Shareable, but not searchable: a link you hand to a friend shouldn't turn up
+# in results for your name.
+_NOINDEX = "noindex, nofollow"
 
 
 _LOGIN = f"""<!doctype html><html><head><meta charset="utf-8">
@@ -83,7 +103,11 @@ padding:11px;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit}}
 
 @app.get("/login", response_class=HTMLResponse)
 def login_form() -> HTMLResponse:
-    return HTMLResponse(_LOGIN.replace("{error}", ""))
+    note = ("" if APP_PASSWORD else
+            '<div class="err">APP_PASSWORD is not set, so there is nothing to '
+            'sign in to. Set it in the project settings to enable syncing.</div>')
+    return HTMLResponse(_LOGIN.replace("{error}", note),
+                        headers={"X-Robots-Tag": _NOINDEX})
 
 
 @app.post("/login")
@@ -95,26 +119,34 @@ def login(password: str = Form("")) -> Response:
         return resp
     return HTMLResponse(
         _LOGIN.replace("{error}", '<div class="err">Wrong password.</div>'),
-        status_code=401)
+        status_code=401, headers={"X-Robots-Tag": _NOINDEX})
+
+
+@app.get("/logout")
+def logout() -> Response:
+    resp = RedirectResponse("/", status_code=303)
+    resp.delete_cookie(COOKIE)
+    return resp
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, weeks: int = 16,
           progression_auth: str | None = Cookie(None)) -> Response:
-    if not _authed(progression_auth):
-        if not APP_PASSWORD and IS_PROD:
-            return HTMLResponse(
-                "<h1>APP_PASSWORD is not set</h1><p>Set it in the Vercel project "
-                "settings before using this deployment — otherwise anyone with "
-                "the URL can read your training data and spend your Garmin "
-                "rate limit.</p>", status_code=503)
+    owner = _authed(progression_auth)
+    if not owner and not PUBLIC_DASHBOARD:
         return RedirectResponse("/login", status_code=303)
-    html = report.render(weeks=max(1, min(weeks, 104)), show_sync=True)
-    # Rendering reads the database on every request; let a shared cache absorb
-    # repeat views while keeping the page fresh right after a sync.
+
+    # The sync button is the one owner-only thing on the page. Visitors get the
+    # identical dashboard without it.
+    html = report.render(weeks=max(1, min(weeks, 104)), show_sync=owner)
+
+    # Rendering reads the database on every request. Visitors all see the same
+    # page, so let the CDN absorb repeat views; the owner's copy carries a
+    # button nobody else may use, so it must never be cached and handed out.
+    cache = ("private, no-store" if owner else
+             "public, max-age=0, s-maxage=60, stale-while-revalidate=300")
     return HTMLResponse(html, headers={
-        "Cache-Control": "private, max-age=0, s-maxage=60, "
-                         "stale-while-revalidate=300"})
+        "Cache-Control": cache, "X-Robots-Tag": _NOINDEX})
 
 
 @app.get("/api/snapshot")
@@ -180,7 +212,9 @@ def health() -> JSONResponse:
     return JSONResponse({
         "ok": err is None,
         "storage": "postgres" if db.is_postgres() else "sqlite",
+        "public_dashboard": PUBLIC_DASHBOARD,
         "password_set": bool(APP_PASSWORD),
+        "sync_available": bool(APP_PASSWORD) or not IS_PROD,
         "cron_secret_set": bool(CRON_SECRET),
         "garmin_tokens": len(db.load_tokens()),
         "counts": counts,
