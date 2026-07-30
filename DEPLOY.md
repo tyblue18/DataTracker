@@ -122,8 +122,14 @@ curl https://your-app.vercel.app/api/health
 - **Button** — *Sync now* in the header POSTs to `/api/sync`, pulls the last
   `SYNC_DAYS` days, and reloads. Days already stored are skipped, so a routine
   sync is a handful of requests and a few seconds. Only visible when signed in.
-- **Cron** — `vercel.json` runs `/api/cron/sync` at 06:00 and 18:00 UTC. Adjust
-  the schedule there. This is what keeps the page fresh for everyone else.
+- **Cron** — `vercel.json` runs `/api/cron/sync` daily at 06:00 UTC, which is
+  what keeps the page fresh for everyone else.
+
+  **Hobby plans reject any cron that runs more than once a day** — a twice-daily
+  expression fails at deploy time, it doesn't silently degrade. Timing is also
+  only accurate to the hour (06:00 means somewhere in the 6am hour). Neither
+  matters much here: each run pulls the last `SYNC_DAYS` days, so a missed or
+  late run is picked up by the next one, and you can always hit the button.
 
 Both share one code path with the CLI, so behaviour can't drift between them.
 
