@@ -86,6 +86,7 @@ In **Project → Settings → Environment Variables**:
 | `GARMIN_RACE_NAME` | `Ironman Wales` | |
 | `GARMIN_WEEKLY_SESSIONS` | `6` | Consistency pillar target. |
 | `SYNC_DAYS` | `7` | How far back each sync looks. |
+| `DETAILS_LIMIT` | `25` | Sessions the decoupling backfill fetches per run. One Garmin request each. |
 | `PUBLIC_DASHBOARD` | *(omit)* | Defaults to public. Set `0` to require the password for the whole page. |
 
 `DATABASE_URL` is set for you by the Neon integration.
@@ -123,7 +124,19 @@ curl https://your-app.vercel.app/api/health
   `SYNC_DAYS` days, and reloads. Days already stored are skipped, so a routine
   sync is a handful of requests and a few seconds. Only visible when signed in.
 - **Cron** — `vercel.json` runs `/api/cron/sync` daily at 06:00 UTC, which is
-  what keeps the page fresh for everyone else.
+  what keeps the page fresh for everyone else, and `/api/cron/sync-details` at
+  06:30 for aerobic decoupling.
+
+  The two are separate on purpose. The activity sync is a handful of requests;
+  the details sync is *one request per long session*, because decoupling needs
+  the full HR and pace/power streams that the activity summary doesn't carry.
+  Bundling them would make the everyday sync as slow and as fragile as the rare
+  one. Split, each gets its own 300s and neither can starve the other.
+
+  The details pass only looks at sessions with no decoupling value yet, newest
+  first, capped at `DETAILS_LIMIT` (25). So it walks backwards through a
+  backlog over a few days and then costs almost nothing. `POST /api/sync/details`
+  triggers it by hand if you'd rather not wait.
 
   **Hobby plans reject any cron that runs more than once a day** — a twice-daily
   expression fails at deploy time, it doesn't silently degrade. Timing is also

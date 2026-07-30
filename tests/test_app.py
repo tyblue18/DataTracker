@@ -242,3 +242,89 @@ def test_health_is_public_and_reports_config(client):
     assert body["password_set"] is True
     assert body["cron_secret_set"] is True
     assert body["storage"] in ("sqlite", "postgres")
+
+
+# --- Details sync (aerobic decoupling backfill) ------------------------------
+
+def test_details_sync_requires_auth(client):
+    c, _ = client
+    assert c.post("/api/sync/details").status_code == 401
+
+
+def test_details_sync_returns_the_summary(client, monkeypatch):
+    c, mod = client
+    c.post("/login", data={"password": "hunter2"})
+    monkeypatch.setattr(mod, "_run_sync_details",
+                        lambda limit: {"eligible": 9, "fetched": 9, "computed": 7})
+    r = c.post("/api/sync/details")
+    assert r.status_code == 200
+    assert r.json()["computed"] == 7
+
+
+def test_details_sync_is_always_bounded(client, monkeypatch):
+    """One Garmin request per session — an unbounded run would hit the 300s cap."""
+    c, mod = client
+    c.post("/login", data={"password": "hunter2"})
+    seen = []
+    monkeypatch.setattr(mod, "_run_sync_details",
+                        lambda limit: (seen.append(limit), {})[1])
+
+    c.post("/api/sync/details")
+    c.post("/api/sync/details?limit=3")
+
+    assert seen == [mod.DETAILS_LIMIT, 3]
+    assert all(isinstance(n, int) and n > 0 for n in seen)
+
+
+def test_details_sync_reports_mfa_as_409(client, monkeypatch):
+    from garmin_tracker.sync import MFARequired
+
+    c, mod = client
+    c.post("/login", data={"password": "hunter2"})
+
+    def boom(limit):
+        raise MFARequired("needs a code")
+
+    monkeypatch.setattr(mod, "_run_sync_details", boom)
+    assert c.post("/api/sync/details").status_code == 409
+
+
+def test_details_cron_requires_the_secret(client):
+    c, _ = client
+    assert c.get("/api/cron/sync-details").status_code == 401
+
+
+def test_details_cron_runs_with_the_secret(client, monkeypatch):
+    c, mod = client
+    monkeypatch.setattr(mod, "_run_sync_details",
+                        lambda limit: {"eligible": 2, "fetched": 2, "computed": 2})
+    r = c.get("/api/cron/sync-details",
+              headers={"Authorization": "Bearer cronsecret"})
+    assert r.status_code == 200
+    assert r.json()["computed"] == 2
+
+
+def test_details_cron_failure_does_not_500(client, monkeypatch):
+    """Same rule as the activity cron: a Garmin outage must not trigger retries."""
+    c, mod = client
+
+    def boom(limit):
+        raise RuntimeError("garmin down")
+
+    monkeypatch.setattr(mod, "_run_sync_details", boom)
+    r = c.get("/api/cron/sync-details",
+              headers={"Authorization": "Bearer cronsecret"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+
+def test_details_sync_does_not_run_inside_the_activity_sync(client, monkeypatch):
+    """They are separate passes on purpose — bundling makes the common sync slow."""
+    c, mod = client
+    c.post("/login", data={"password": "hunter2"})
+    called = []
+    monkeypatch.setattr(mod, "_run_sync_details",
+                        lambda limit: called.append(limit) or {})
+    monkeypatch.setattr(mod, "_run_sync", lambda days: {"activities": 1})
+    c.post("/api/sync")
+    assert called == []

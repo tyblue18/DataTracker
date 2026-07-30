@@ -2,11 +2,13 @@
 
 Routes
 ------
-GET  /              the rendered dashboard          (public by default)
-POST /api/sync      pull the latest data from Garmin  (owner only)
-GET  /api/snapshot  the same numbers as JSON          (owner only)
-GET  /api/cron/sync scheduled sync (Vercel Cron)      (CRON_SECRET)
-GET  /api/health    liveness + configuration check    (public, no data)
+GET  /                     the rendered dashboard   (public by default)
+POST /api/sync             pull latest from Garmin  (owner only)
+POST /api/sync/details     backfill decoupling      (owner only)
+GET  /api/snapshot         the same numbers as JSON (owner only)
+GET  /api/cron/sync        scheduled sync           (CRON_SECRET)
+GET  /api/cron/sync-details scheduled decoupling    (CRON_SECRET)
+GET  /api/health           liveness + config check  (public, no data)
 
 Auth
 ----
@@ -41,6 +43,10 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 CRON_SECRET = os.getenv("CRON_SECRET")
 SYNC_DAYS = int(os.getenv("SYNC_DAYS", "7"))
+# Activity-detail fetches allowed in one run. Each is a separate Garmin request
+# for one session's streams, so this is the whole time budget of that endpoint.
+# 25 sits comfortably inside 300s and clears a normal backlog in a day or two.
+DETAILS_LIMIT = int(os.getenv("DETAILS_LIMIT", "25"))
 IS_PROD = bool(os.getenv("VERCEL"))
 # Reading the dashboard needs no password; set this to 0 to lock the page down
 # to the owner as well.
@@ -164,6 +170,25 @@ def _run_sync(days: int) -> dict:
     return summary
 
 
+def _run_sync_details(limit: int) -> dict:
+    """Fetch streams for long sessions and store their aerobic decoupling.
+
+    Deliberately a separate pass from ``_run_sync``. The activity sync is a
+    handful of requests; this is one request per eligible session, so bundling
+    them would make the common sync as slow and as failure-prone as the rare
+    one. Kept apart, each gets its own time budget and neither can take the
+    other down.
+
+    It is also self-limiting: only sessions with no decoupling value are
+    fetched, newest first, so repeated runs walk backwards through the backlog
+    and then do nothing.
+    """
+    from garmin_tracker.sync import _no_prompt, run_sync_details
+
+    db.init_db()
+    return run_sync_details(limit=limit, mfa_prompt=_no_prompt)
+
+
 @app.post("/api/sync")
 def sync(days: int | None = None,
          progression_auth: str | None = Cookie(None)) -> JSONResponse:
@@ -181,21 +206,59 @@ def sync(days: int | None = None,
                             detail=f"{type(e).__name__}: {e}") from e
 
 
-@app.get("/api/cron/sync")
-def cron_sync(request: Request) -> JSONResponse:
-    """Vercel Cron target. Vercel sends `Authorization: Bearer $CRON_SECRET`."""
+@app.post("/api/sync/details")
+def sync_details(limit: int | None = None,
+                 progression_auth: str | None = Cookie(None)) -> JSONResponse:
+    """Backfill aerobic decoupling on demand, for clearing a backlog."""
+    _guard(progression_auth)
+    from garmin_tracker.sync import MFARequired
+
+    try:
+        return JSONResponse(_run_sync_details(limit or DETAILS_LIMIT))
+    except MFARequired as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"{type(e).__name__}: {e}") from e
+
+
+def _cron_guard(request: Request) -> None:
+    """Vercel sends `Authorization: Bearer $CRON_SECRET` on scheduled calls."""
     if CRON_SECRET:
         if request.headers.get("authorization") != f"Bearer {CRON_SECRET}":
             raise HTTPException(status_code=401, detail="Bad cron secret.")
     elif IS_PROD:
         raise HTTPException(status_code=503, detail="CRON_SECRET is not set.")
+
+
+def _cron_run(fn) -> JSONResponse:
+    """Run a cron job without ever returning non-2xx on a Garmin failure.
+
+    Vercel retries a failed cron, and a Garmin outage that retries is how you
+    turn one bad morning into a rate limit. The failure goes in the body.
+    """
     try:
-        return JSONResponse(_run_sync(SYNC_DAYS))
+        return JSONResponse(fn())
     except Exception as e:
-        # Never 500 a cron: a failed sync should be visible, not retried into
-        # a rate limit.
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"},
                             status_code=200)
+
+
+@app.get("/api/cron/sync")
+def cron_sync(request: Request) -> JSONResponse:
+    _cron_guard(request)
+    return _cron_run(lambda: _run_sync(SYNC_DAYS))
+
+
+@app.get("/api/cron/sync-details")
+def cron_sync_details(request: Request) -> JSONResponse:
+    """Second daily job: the decoupling backfill.
+
+    Separate from the activity cron so a slow stream fetch can't eat the time
+    budget of the sync that actually keeps the page current.
+    """
+    _cron_guard(request)
+    return _cron_run(lambda: _run_sync_details(DETAILS_LIMIT))
 
 
 @app.get("/api/health")
