@@ -741,3 +741,80 @@ def test_summary_stats_bike_vo2max_is_none_when_absent():
     daily = pd.DataFrame({"date": pd.to_datetime(["2026-01-01"]),
                           "vo2max_run": [54.0]})
     assert metrics.summary_stats(acts, daily)["vo2max_bike"] is None
+
+
+# ---------------------------------------------------------------------------
+# sleep_baseline / sleep_summary
+# ---------------------------------------------------------------------------
+
+def _sleep(hours_by_day: list[float], start: str = "2026-01-01") -> pd.DataFrame:
+    dates = pd.date_range(start, periods=len(hours_by_day), freq="D")
+    return pd.DataFrame({"date": dates,
+                         "total_sleep_s": [h * 3600 for h in hours_by_day]})
+
+
+def test_sleep_baseline_is_empty_without_data():
+    assert metrics.sleep_baseline(pd.DataFrame()).empty
+    assert metrics.sleep_baseline(None).empty
+
+
+def test_sleep_baseline_converts_seconds_to_hours():
+    sb = metrics.sleep_baseline(_sleep([8.0] * 10))
+    assert sb["hours"].dropna().iloc[0] == pytest.approx(8.0)
+
+
+def test_zero_length_nights_are_treated_as_missing_not_as_no_sleep():
+    """A 0 s night is the watch not being worn, not an all-nighter."""
+    sb = metrics.sleep_baseline(_sleep([8.0, 0.0, 8.0]))
+    assert sb["hours"].isna().sum() == 1
+    assert sb["hours"].dropna().tolist() == pytest.approx([8.0, 8.0])
+
+
+def test_naps_on_the_same_date_sum_rather_than_average():
+    s = pd.DataFrame({"date": pd.to_datetime(["2026-01-01", "2026-01-01"]),
+                      "total_sleep_s": [6 * 3600, 1 * 3600]})
+    assert metrics.sleep_baseline(s)["hours"].iloc[0] == pytest.approx(7.0)
+
+
+def test_a_drop_below_personal_baseline_is_flagged_even_when_hours_look_fine():
+    """The point of a personal baseline: 7.6 h is short for a 9 h sleeper."""
+    hours = [9.0] * 70 + [7.6] * 7
+    sl = metrics.sleep_summary(_sleep(hours),
+                               through=pd.Timestamp("2026-01-01") +
+                               pd.Timedelta(days=len(hours) - 1))
+    assert sl["z"] < -1
+    assert sl["status"] == "warning"
+    assert not sl["below_floor"]          # above the absolute floor...
+    assert sl["label"] == "Below your normal"   # ...but low for this athlete
+
+
+def test_habitually_short_sleep_is_flagged_even_when_it_is_the_norm():
+    """A baseline trained downward is still short sleep — absolute floor wins."""
+    hours = [6.0] * 80
+    sl = metrics.sleep_summary(_sleep(hours),
+                               through=pd.Timestamp("2026-01-01") +
+                               pd.Timedelta(days=79))
+    assert sl["below_floor"]
+    assert sl["status"] in ("warning", "serious")
+    assert sl["nights_short"] > 0
+
+
+def test_normal_sleep_produces_no_sleep_flag():
+    hours = [8.2] * 80
+    flags = metrics.training_flags(
+        make_activities([("2026-03-20", "run", 100)]), pd.DataFrame(),
+        _sleep(hours), through=pd.Timestamp("2026-03-21"))
+    assert not any("sleep" in f["title"].lower() or "normal" in f["title"].lower()
+                   for f in flags)
+
+
+def test_short_sleep_raises_a_training_flag():
+    hours = [5.8] * 80
+    flags = metrics.training_flags(
+        make_activities([("2026-03-20", "run", 100)]), pd.DataFrame(),
+        _sleep(hours), through=pd.Timestamp("2026-03-21"))
+    assert any(f["title"] == "Short sleep" for f in flags)
+
+
+def test_sleep_summary_needs_a_baseline_before_it_judges():
+    assert metrics.sleep_summary(_sleep([8.0, 8.0])) is None

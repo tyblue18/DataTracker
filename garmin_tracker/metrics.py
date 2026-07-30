@@ -131,12 +131,34 @@ def fitness_fatigue(activities: pd.DataFrame,
     return dl.reset_index()
 
 
+# Deliberately absent: the acute:chronic workload ratio (ACWR).
+#
+# It is the best-known load-management metric in the field, so its omission is
+# a decision rather than an oversight. Impellizzeri et al. (2020) showed the
+# ratio is mathematically coupled to its own numerator, which inflates apparent
+# effect sizes without adding predictive value; Impellizzeri et al. (2020) also
+# showed that an acute-to-*random* chronic ratio is associated with injury
+# about as strongly as the real one, which is what you would expect from an
+# artefact. The "sweet spot" figure has been retracted in substance, and 2024
+# reviews still find the injury relationship inconclusive.
+#
+# Ramp rate below covers the same intent — how fast is load rising — without
+# the coupling, because it is a difference on one series rather than a ratio of
+# a series to itself. If you are ever tempted to add ACWR because another app
+# shows it, this is the reason not to.
+
+
 def ramp_rate(ff: pd.DataFrame, window: int = 28) -> dict | None:
     """Current CTL change per week, with the accepted-risk band attached.
 
     The widely used guideline is that sustained CTL growth above ~5-7 points per
     week carries a raised injury/illness risk; flat-to-negative means fitness is
     being maintained or lost. Returns None while CTL is still warming up.
+
+    Note on provenance: the 5-7 band is coaching convention popularised by
+    TrainingPeaks, not a controlled finding. It is a reasonable prior and is
+    treated as one — it colours a label, and nothing downstream depends on the
+    exact cut.
     """
     if ff.empty or ff["ctl"].isna().all():
         return None
@@ -712,6 +734,134 @@ def hrv_baseline(daily: pd.DataFrame, roll: int = 7, base_window: int = 60,
 
 
 # ---------------------------------------------------------------------------
+# Recovery: sleep duration against its own normal range
+# ---------------------------------------------------------------------------
+# Sleep *duration* is the sleep variable with evidence behind it. Short sleep
+# is a consistent independent predictor of injury: Milewski et al. (2014) found
+# 1.7x the injury rate in adolescent athletes habitually under 8 h, and Watson
+# et al. (2020) found sleep duration an independent in-season predictor in
+# collegiate players after adjusting for covariates. Those cohorts are young
+# team-sport athletes rather than adult endurance athletes, so treat the effect
+# as directionally real and the exact number as indicative.
+#
+# Two deliberate design choices follow from how the number is measured.
+#
+# 1. The primary signal is measured hours, not Garmin's Sleep Score. The score
+#    is a proprietary composite that cannot be audited, validated, or compared
+#    across firmware versions; duration is a physical quantity with a
+#    literature attached.
+#
+# 2. The primary *comparison* is against the athlete's own baseline, not an
+#    absolute target. Wrist wearables systematically overestimate total sleep
+#    time — Garmin by roughly 40 min/night against polysomnography, and by
+#    substantially more against research actigraphy in masters endurance
+#    athletes. An absolute "did you get 8 hours" test therefore measures the
+#    device's calibration as much as the athlete's night. Differencing against
+#    a personal baseline cancels any roughly-constant bias, which is the same
+#    reason hrv_baseline is expressed in SWC units rather than milliseconds.
+#
+# The absolute floor below is kept as a *secondary* check, and only in the
+# direction the bias permits: because the device overestimates, a reported mean
+# under the threshold is conservative evidence that true sleep is shorter
+# still. The reverse inference — "the watch says 8 h, so you slept enough" —
+# does not hold, and nothing here makes it.
+#
+# Sleep *stages* (deep/REM) are deliberately ignored. They are the least
+# accurate output of consumer wearables and carry no actionable training
+# guidance that duration does not already give.
+
+# Reported 7-day mean below this many hours is flagged regardless of baseline.
+# Set at the low end of the evidence because the measurement runs high.
+SLEEP_SHORT_HOURS = 7.0
+
+
+def sleep_baseline(sleep: pd.DataFrame, roll: int = 7, base_window: int = 60,
+                   swc_mult: float = 0.5) -> pd.DataFrame:
+    """Total sleep time (hours) with the athlete's own normal range.
+
+    Returns: date, hours, roll, baseline, swc, lower, upper, z, status, short.
+
+    ``z`` is the 7-day mean's distance from the personal baseline in smallest-
+    worthwhile-change units; ``short`` marks days where the 7-day mean is under
+    ``SLEEP_SHORT_HOURS`` in absolute terms. See the section note above for why
+    the relative signal leads and the absolute one only backs it up.
+    """
+    cols = ["date", "hours", "roll", "baseline", "swc", "lower", "upper",
+            "z", "status", "short"]
+    if sleep is None or sleep.empty or "total_sleep_s" not in sleep.columns:
+        return pd.DataFrame(columns=cols)
+    s = sleep[["date", "total_sleep_s"]].dropna().copy()
+    if s.empty:
+        return pd.DataFrame(columns=cols)
+    s["date"] = pd.to_datetime(s["date"]).dt.normalize()
+    idx = pd.date_range(s["date"].min(), s["date"].max(), freq="D")
+    # Garmin occasionally records a nap as a second entry for the same date;
+    # summing rather than averaging keeps the day's total honest.
+    hours = (s.groupby("date")["total_sleep_s"].sum() / 3600.0).reindex(idx)
+    # A zero-length night is a non-wear artefact, not four minutes of sleep.
+    hours = hours.where(hours > 0)
+
+    out = pd.DataFrame({"date": idx, "hours": hours.values})
+    minp = max(2, roll // 2)
+    out["roll"] = out["hours"].rolling(roll, min_periods=minp).mean()
+    out["baseline"] = out["roll"].rolling(base_window, min_periods=roll).mean()
+    out["swc"] = out["hours"].rolling(base_window, min_periods=roll).std() * swc_mult
+    out["lower"] = out["baseline"] - out["swc"]
+    out["upper"] = out["baseline"] + out["swc"]
+    out["z"] = (out["roll"] - out["baseline"]) / out["swc"].replace(0, np.nan)
+    out["status"] = np.select(
+        [out["roll"] > out["upper"], out["roll"] < out["lower"]],
+        ["long", "short"], default="normal")
+    out.loc[out["roll"].isna() | out["baseline"].isna(), "status"] = "unknown"
+    out["short"] = (out["roll"] < SLEEP_SHORT_HOURS).fillna(False)
+    return out
+
+
+def sleep_summary(sleep: pd.DataFrame,
+                  through: pd.Timestamp | None = None) -> dict | None:
+    """Latest sleep position: hours, personal baseline, and a verdict.
+
+    Returns None until there is enough history for a baseline to mean anything.
+    """
+    sb = sleep_baseline(sleep)
+    if sb.empty:
+        return None
+    asof = pd.Timestamp(through).normalize() if through is not None else _today()
+    sb = sb[sb["date"] <= asof]
+    valid = sb[sb["roll"].notna()]
+    if valid.empty:
+        return None
+    last = valid.iloc[-1]
+    recent = sb[sb["date"] > asof - pd.Timedelta(days=14)]
+    nights_short = int((recent["hours"] < SLEEP_SHORT_HOURS).sum())
+    nights_known = int(recent["hours"].notna().sum())
+
+    below_floor = bool(last["short"])
+    z = None if pd.isna(last["z"]) else float(last["z"])
+    if below_floor:
+        status = "serious" if z is not None and z < -1 else "warning"
+        label = "Short sleep"
+    elif z is not None and z < -1:
+        status, label = "warning", "Below your normal"
+    elif z is not None and z > 1:
+        status, label = "good", "Above your normal"
+    else:
+        status, label = "good", "Normal for you"
+    return {
+        "hours": round(float(last["roll"]), 2),
+        "baseline": (None if pd.isna(last["baseline"])
+                     else round(float(last["baseline"]), 2)),
+        "z": None if z is None else round(z, 2),
+        "status": status,
+        "label": label,
+        "below_floor": below_floor,
+        "nights_short": nights_short,
+        "nights_known": nights_known,
+        "date": last["date"],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Monotony & strain (Foster)
 # ---------------------------------------------------------------------------
 # Same weekly load can be delivered as six identical days or as hard/easy
@@ -1117,9 +1267,29 @@ def progression_series(
         score_hrv = pd.Series(np.interp(z, [-3, -1, 0, 1, 3], [0, 30, 60, 80, 100]),
                               index=idx).where(z.notna())
 
+    # Measured hours against this athlete's own normal, on the same SWC scale as
+    # the HRV term above. Garmin's Sleep Score is kept only as a fallback for
+    # days with no duration recorded: it is a proprietary composite, so a pillar
+    # resting on it alone can't be checked against anything.
+    sb = sleep_baseline(sleep)
+    if sb.empty:
+        score_sleep_dur = pd.Series(np.nan, index=idx)
+    else:
+        zs = sb.set_index("date")["z"].reindex(idx)
+        score_sleep_dur = pd.Series(
+            np.interp(zs, [-3, -1, 0, 1], [0, 35, 65, 100]), index=idx
+        ).where(zs.notna())
+        # An absolute shortfall caps the score no matter how normal it has
+        # become for this athlete — a baseline you have trained downward is
+        # still short sleep.
+        short = sb.set_index("date")["short"].reindex(idx).fillna(False)
+        score_sleep_dur = score_sleep_dur.where(~short.astype(bool),
+                                                score_sleep_dur.clip(upper=50))
+
     slp = _daily_col(sleep, "sleep_score", idx)
     sleep_recent = slp.rolling(7, min_periods=2).mean()
-    score_sleep = ((sleep_recent - 40) / 50 * 100).clip(0, 100)  # 40 -> 0, 90 -> 100
+    score_sleep_garmin = ((sleep_recent - 40) / 50 * 100).clip(0, 100)  # 40->0, 90->100
+    score_sleep = score_sleep_dur.fillna(score_sleep_garmin)
 
     score_tsb = pd.Series(
         np.interp(tsb, [-30, -10, 0, 10], [0, 60, 90, 100]), index=idx
@@ -1345,6 +1515,27 @@ def training_flags(activities: pd.DataFrame, daily: pd.DataFrame,
         if hq.get("tagged"):
             detail += f" ({hq['tagged']} already tagged.)"
         add("serious", "Run heart rate is unreliable", detail)
+
+    # --- Sleep ---
+    # Placed above intensity because it gates adaptation to all of it: short
+    # sleep is an independent injury predictor, and no distribution of easy and
+    # hard work compensates for not recovering from either.
+    sl = sleep_summary(sleep, through=asof)
+    if sl and sl["status"] in ("warning", "serious"):
+        if sl["below_floor"]:
+            detail = (f"{sl['hours']:.1f} h/night over the last week"
+                      + (f", {sl['nights_short']} of {sl['nights_known']} nights "
+                         f"under {SLEEP_SHORT_HOURS:.0f} h"
+                         if sl["nights_known"] else "")
+                      + ". Habitual short sleep is one of the few recovery "
+                      "variables independently linked to injury risk. Your watch "
+                      "also overestimates sleep, so the true figure is lower.")
+        else:
+            detail = (f"{sl['hours']:.1f} h/night against your usual "
+                      f"{sl['baseline']:.1f} h. Measured against your own "
+                      "baseline rather than a target, so this is a real drop "
+                      "for you, not a generic recommendation.")
+        add(sl["status"], sl["label"], detail)
 
     # --- Intensity distribution ---
     tid = intensity_summary(activities, source="auto", tags=tags)

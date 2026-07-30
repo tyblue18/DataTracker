@@ -216,7 +216,40 @@ tracker keeps the durable history and dashboards.
   it's shown as a stat chip, not a trend.
 - Garmin's unofficial API can change shape; parsing is defensive and the raw JSON
   is retained so you can recover any field later.
+- Sleep **duration** is trusted; sleep **stages** are not. Wrist wearables
+  overestimate total sleep time — Garmin by roughly 40 min/night against
+  polysomnography, and by more than that against research actigraphy in masters
+  endurance athletes — and stage detection is the least accurate output of all.
+  So duration is judged against your own rolling baseline rather than an
+  absolute target, which cancels a roughly constant bias, and deep/REM splits
+  are charted but never scored.
 - All data stays **local** — nothing leaves your machine except the Garmin login.
+
+## Evidence base
+
+Where a metric implements something specific from the literature, it says so at
+the point of definition in `garmin_tracker/metrics.py`. The load of it:
+
+| Metric | Basis | How firm |
+|---|---|---|
+| CTL / ATL / TSB | Banister impulse-response | Established model; the *parameters* are convention |
+| Monotony & strain | Foster (1998) | Established |
+| Session-RPE load | Foster; RPE × duration | Well validated, and sensor-proof |
+| Intensity distribution | Seiler; polarised / pyramidal models | Strong for trained endurance athletes |
+| Polarization Index | Treff et al. (2019) | Defined formula, narrower evidence |
+| HRV vs. personal baseline (SWC) | Plews & Buchheit | Strong method; act on the 7-day mean, never a single night |
+| Sleep duration vs. personal baseline | Milewski (2014), Watson (2020) | Direction firm; thresholds from *team-sport* cohorts, so indicative |
+| Aerobic decoupling | Maunder et al., durability literature | Growing, credible |
+| CTL ramp rate band (5–7/wk) | Coaching convention | Prior, not a finding — labelled as such in code |
+
+**Deliberately excluded: the acute:chronic workload ratio (ACWR).** It's the
+most widely shown load metric in training apps, so its absence is a choice.
+Impellizzeri et al. (2020) showed the ratio is mathematically coupled to its own
+numerator — it inflates apparent effects without adding predictive value — and
+that an acute-to-*random* chronic ratio predicts injury about as well as the
+real one. 2024 reviews still find the injury relationship inconclusive. Ramp
+rate covers the same question without the coupling. The reasoning is repeated
+next to `ramp_rate()` so nobody re-adds it later.
 
 ## Access it anywhere
 

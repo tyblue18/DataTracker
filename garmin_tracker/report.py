@@ -494,15 +494,40 @@ def _recovery(hb: pd.DataFrame, rhr: pd.DataFrame, slp: pd.DataFrame,
         sleep_avg = f"{int(avg // 3600)}h {int(avg % 3600 // 60):02d}m"
     else:
         sleep_avg = "—"
+
+    # Judged against this athlete's own baseline rather than a round number:
+    # the watch overestimates sleep, so a fixed target mostly measures its
+    # calibration. See the section note in metrics.sleep_baseline.
+    sl = metrics.sleep_summary(slp)
+    if sl:
+        sleep_sub = "· vs your own baseline"
+        badge = pill(sl["label"], viz.STATUS[sl["status"]])
+        base = (f' · your usual {sl["baseline"]:.1f} h'
+                if sl["baseline"] is not None else "")
+        note = (f'7-day mean {sl["hours"]:.1f} h{base}. '
+                + (f'{sl["nights_short"]} of {sl["nights_known"]} recorded nights '
+                   f'under {metrics.SLEEP_SHORT_HOURS:.0f} h. '
+                   if sl["below_floor"] and sl["nights_known"] else "")
+                + 'Wrist wearables read high against sleep-lab measurement, so '
+                  'the trend against your own normal is the trustworthy part, '
+                  'not the absolute number.')
+    else:
+        sleep_sub = "· building a baseline"
+        badge = ""
+        note = ('Needs a few weeks of nights before a personal baseline means '
+                'anything.')
+
     sleep_card = card(
-        f'<div style="display:flex;justify-content:space-between;align-items:center">'
+        f'<div style="display:flex;justify-content:space-between;'
+        f'align-items:center;gap:10px;flex-wrap:wrap">'
         f'<div style="font-size:13px;font-weight:700">Sleep '
-        f'<span style="color:{viz.MUTED};font-weight:500">· vs 8 h target</span></div>'
-        f'<span style="font-size:12.5px;color:{viz.MUTED_2}">avg '
+        f'<span style="color:{viz.MUTED};font-weight:500">{sleep_sub}</span></div>'
+        f'<span style="font-size:12.5px;color:{viz.MUTED_2};display:flex;'
+        f'align-items:center;gap:8px">{badge}avg '
         f'<b style="color:{viz.INK}">{sleep_avg}</b></span></div>'
         f'<div style="margin-top:12px">{charts.sleep_chart(slp)}</div>'
-        f'<div class="muted" style="margin-top:8px">Gaps are nights the watch '
-        f'recorded nothing.</div>')
+        f'<div class="muted" style="margin-top:8px">{note} Gaps are nights the '
+        f'watch recorded nothing.</div>')
 
     n = int(eff["aerobic"].sum()) if not eff.empty else 0
     excluded = max(0, n_runs - len(eff))
