@@ -231,7 +231,19 @@ def connect(db_path: Path | None = None):
         conn = psycopg.connect(url, autocommit=False)
     else:
         path = db_path or settings.db_path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # Falling back to SQLite with nowhere to put the file means, on a
+            # serverless host, that the Postgres connection string never
+            # reached the function. Say that, instead of a bare errno 30 that
+            # reads like a bug in the app.
+            raise RuntimeError(
+                f"No Postgres connection string is configured and the local "
+                f"database directory ({path.parent}) cannot be created: {e}. "
+                f"A deployment must set DATABASE_URL — serverless filesystems "
+                f"are read-only, so the SQLite fallback cannot work there."
+            ) from e
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
     try:

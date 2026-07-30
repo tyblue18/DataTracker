@@ -6,8 +6,8 @@ function can return HTML, and it cannot host Streamlit's long-lived websocket
 session, so `dashboard.py` stays a local tool and is excluded from the deploy.
 
 **End state:** a public URL you can send to anyone, a **Sync now** button that
-only *you* see, and a cron job that syncs twice a day so the page is fresh
-before anyone opens it.
+only *you* see, and a daily cron job so the page is fresh before anyone opens
+it.
 
 ---
 
@@ -107,12 +107,12 @@ curl https://your-app.vercel.app/api/health
 ```json
 {"ok": true, "storage": "postgres", "public_dashboard": true,
  "password_set": true, "sync_available": true, "cron_secret_set": true,
- "garmin_tokens": 3, "counts": {"activities": 55}}
+ "garmin_tokens": 1, "counts": {"activities": 55}}
 ```
 
 - `storage: "sqlite"` → `DATABASE_URL` isn't reaching the function; the page
   will look empty because it's reading a database that doesn't exist.
-- `garmin_tokens: 0` → step 2 didn't land, and sync will fail with a 409.
+- `garmin_tokens: 0` → step 2 did not land, and sync will fail with a 409.
 - `sync_available: false` → `APP_PASSWORD` isn't set.
 
 ---
@@ -165,7 +165,7 @@ is never imported by the deployed code path.
 
 ## Cost
 
-Free tier throughout: Vercel Hobby, Neon free Postgres. Two cron runs a day and
+Free tier throughout: Vercel Hobby, Neon free Postgres. One cron run a day and
 personal traffic sit far inside the limits.
 
 ## Security notes
