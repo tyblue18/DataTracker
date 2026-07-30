@@ -87,13 +87,32 @@ button{{font-family:inherit}}
 .btn:hover{{background:{viz.ACCENT_2}}}
 .btn:disabled{{opacity:.55;cursor:progress}}
 .g2{{grid-template-columns:1fr 1fr}}
+.g4{{grid-template-columns:repeat(4,1fr)}}
 .g5{{grid-template-columns:repeat(5,1fr)}}
 .hero{{grid-template-columns:400px 1fr}}
 .side{{grid-template-columns:1fr 300px}}
+
+/* label · bar · figures. The fixed outer columns keep every bar starting and
+   ending on the same line down the list, which is what makes the disciplines
+   comparable at a glance. Below 640px there isn't width for three columns, so
+   the bar drops to its own full-width row rather than being crushed to nothing.
+   These live here rather than inline because an inline grid-template-columns
+   outranks a media query and silently defeats it. */
+.row3{{display:grid;align-items:center}}
+.row-mix{{grid-template-columns:64px 1fr 220px;gap:14px}}
+.row-band{{grid-template-columns:70px 1fr 110px;gap:12px}}
+
 @media (max-width:1000px){{
   .g2,.g5,.hero,.side{{grid-template-columns:1fr}}
   .wrap{{padding:0 14px 60px}}
   .nav{{margin:0 -14px;padding:10px 14px}}
+}}
+@media (max-width:640px){{
+  .g4{{grid-template-columns:repeat(2,1fr)}}
+  .row-mix,.row-band{{grid-template-columns:1fr auto;gap:8px 10px}}
+  .row-mix>:nth-child(1),.row-band>:nth-child(1){{grid-area:1/1}}
+  .row-mix>:nth-child(3),.row-band>:nth-child(3){{grid-area:1/2}}
+  .row-mix>:nth-child(2),.row-band>:nth-child(2){{grid-area:2/1/3/3}}
 }}
 """
 
@@ -273,8 +292,8 @@ def _overview(prog: dict | None, proj: dict | None) -> str:
                 f'<div class="sub">If you keep averaging '
                 f'{proj["typical_daily_load"]:.0f} load/day and taper from '
                 f'{proj["taper_start"]:%d %b}.</div>'
-                f'<div class="grid g5" style="grid-template-columns:repeat(4,1fr);'
-                f'margin-top:14px">{"".join(tiles)}</div></div>')
+                f'<div class="grid g4" style="margin-top:14px">'
+                f'{"".join(tiles)}</div></div>')
 
     return (f'<section id="overview" style="margin-top:14px">'
             f'<div class="grid hero">{hero}{spark}</div>'
@@ -373,8 +392,7 @@ def _intensity(tid: dict | None, by_sport: pd.DataFrame, wk: pd.DataFrame,
                            f'background:{viz.BAND_COLORS[b]}"></div>'
                            for b in ("low", "moderate", "high"))
             sport_rows += (
-                f'<div style="display:grid;grid-template-columns:70px 1fr 110px;'
-                f'gap:12px;align-items:center">'
+                f'<div class="row3 row-band">'
                 f'<span style="display:flex;align-items:center;gap:7px;font-size:13px;'
                 f'font-weight:600"><span style="width:9px;height:9px;border-radius:99px;'
                 f'background:{viz.SPORT_COLORS[sport]}"></span>'
@@ -525,8 +543,7 @@ def _disciplines(bal: pd.DataFrame, wv: pd.DataFrame) -> str:
         last = ("never recorded" if ds is None else f"stale · {ds} d" if r["stale"]
                 else "today" if ds == 0 else f"{ds} d ago")
         rows += (
-            f'<div style="display:grid;grid-template-columns:64px 1fr 220px;gap:14px;'
-            f'align-items:center">'
+            f'<div class="row3 row-mix">'
             f'<span style="display:flex;align-items:center;gap:8px;font-size:13.5px;'
             f'font-weight:700"><span style="width:10px;height:10px;border-radius:99px;'
             f'background:{c}"></span>{viz.SPORT_NAMES[r["sport"]]}</span>'
