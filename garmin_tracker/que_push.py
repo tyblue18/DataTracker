@@ -18,6 +18,7 @@ from Que -> Metrics tab -> "Auto-sync from your watch" -> Copy token).
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import requests
@@ -73,7 +74,23 @@ def activity_to_payload(row: dict) -> dict | None:
     if dist_m > 0:
         payload["distance"] = round(dist_m / 1000.0, 3)
         payload["unit"] = "km"
+
+    # Garmin's `calories` is TOTAL (includes resting); `bmrCalories` is the
+    # resting part, so ACTIVE = total - bmr — the "active calories" the watch
+    # shows, and what Que treats as the net activity burn (HR/power based, far
+    # better than a distance estimate, especially on the bike).
+    active = _num(row.get("calories")) - _num(row.get("bmr_calories"))
+    if active > 0:
+        payload["calories"] = round(active)
     return payload
+
+
+def _bmr_from_raw(raw) -> float:
+    """Garmin's resting-calorie portion (`bmrCalories`) out of the stored raw JSON."""
+    try:
+        return float(json.loads(raw).get("bmrCalories") or 0)
+    except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+        return 0.0
 
 
 def _rows_since(conn, since: str, resend: bool) -> list[dict]:
@@ -86,7 +103,10 @@ def _rows_since(conn, since: str, resend: bool) -> list[dict]:
         db._ph(f"SELECT * FROM activities WHERE {where} ORDER BY date"), (since,)
     )
     names = [d[0] for d in cur.description]
-    return [dict(zip(names, r)) for r in cur.fetchall()]
+    rows = [dict(zip(names, r)) for r in cur.fetchall()]
+    for row in rows:
+        row["bmr_calories"] = _bmr_from_raw(row.get("raw"))  # derived from raw JSON
+    return rows
 
 
 def push_activities(days: int = 30, resend: bool = False) -> dict:

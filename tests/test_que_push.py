@@ -75,3 +75,21 @@ def test_date_is_truncated_to_ten_chars():
         "distance_m": 5000, "moving_s": 1500,
     })
     assert p["date"] == "2026-08-01"
+
+
+def test_active_calories_are_total_minus_bmr():
+    # Garmin stores TOTAL calories; active = total - bmrCalories.
+    p = activity_to_payload({
+        "activity_id": 9, "sport": "bike", "date": "2026-08-01",
+        "distance_m": 20000, "moving_s": 3600,
+        "calories": 800, "bmr_calories": 120,
+    })
+    assert p["calories"] == 680
+
+
+def test_no_calories_key_when_active_is_zero_or_missing():
+    p = activity_to_payload({
+        "activity_id": 10, "sport": "run", "date": "2026-08-01",
+        "distance_m": 5000, "moving_s": 1500,  # no calorie fields
+    })
+    assert "calories" not in p
