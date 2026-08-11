@@ -8,6 +8,7 @@ Usage:
     python track.py sync --activities    # activities only (fast)
     python track.py sync --wellness      # daily wellness only
     python track.py sync-que             # pull strength workouts from Que
+    python track.py push-que             # push cardio (run/bike/swim) to Que
     python track.py sync-details         # fetch streams for long sessions -> aerobic decoupling
     python track.py backfill             # re-parse stored data into new columns (no network)
     python track.py info                 # show what's stored
@@ -45,6 +46,10 @@ def cmd_sync(args) -> None:
     from garmin_tracker.config import settings
     if settings.que_export_path.exists():
         cmd_sync_que(args)
+    # Best-effort: push new cardio to Que if the activity endpoint is configured,
+    # so a single `sync` also forwards runs/rides/swims (no manual entry).
+    if settings.que_activity_url and settings.que_activity_token:
+        cmd_push_que(args)
 
 
 def cmd_sync_que(args) -> None:
@@ -56,6 +61,21 @@ def cmd_sync_que(args) -> None:
         print(f"Que strength: {s['sessions']} sessions, {s['sets']} sets ({span}).")
     except QueUnavailable as e:
         print(f"Que strength: skipped — {e}")
+
+
+def cmd_push_que(args) -> None:
+    """Push Garmin cardio (run/bike/swim) into the Que app."""
+    from garmin_tracker.que_push import QueNotConfigured, push_activities
+
+    days = getattr(args, "days", 30) or 30
+    resend = getattr(args, "resend", False)
+    try:
+        s = push_activities(days=days, resend=resend)
+    except QueNotConfigured as e:
+        print(f"Que push: skipped — {e}")
+        return
+    print(f"Que push: {s['sent']} sent, {s['skipped']} skipped, {s['failed']} failed "
+          f"(of {s['considered']} in the last {days} days).")
 
 
 def cmd_sync_details(args) -> None:
@@ -334,6 +354,14 @@ def main() -> None:
 
     p_que = sub.add_parser("sync-que", help="Pull strength workouts from the Que app")
     p_que.set_defaults(func=cmd_sync_que)
+
+    p_push = sub.add_parser(
+        "push-que", help="Push Garmin cardio (run/bike/swim) into the Que app")
+    p_push.add_argument("--days", type=int, default=30,
+                        help="Days of history to consider (default 30)")
+    p_push.add_argument("--resend", action="store_true",
+                        help="Re-POST activities already pushed (the server still dedups)")
+    p_push.set_defaults(func=cmd_push_que)
 
     p_det = sub.add_parser(
         "sync-details",

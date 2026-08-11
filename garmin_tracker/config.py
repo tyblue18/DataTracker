@@ -46,6 +46,8 @@ class Settings:
     race_name: str | None
     weekly_session_target: int  # sessions/week the Consistency pillar aims for
     que_export_path: Path       # exported Que localStorage JSON (ironmanCoreDB_v2)
+    que_activity_url: str | None    # Que /api/health/activity endpoint (cardio push)
+    que_activity_token: str | None  # personal health-sync token from the Que app
 
     @classmethod
     def load(cls) -> Settings:
@@ -63,6 +65,8 @@ class Settings:
             race_name=os.getenv("GARMIN_RACE_NAME") or "Race day",
             weekly_session_target=int(os.getenv("GARMIN_WEEKLY_SESSIONS", "6")),
             que_export_path=_resolve(os.getenv("QUE_EXPORT_PATH", "data/que_export.json")),
+            que_activity_url=os.getenv("QUE_ACTIVITY_URL") or None,
+            que_activity_token=os.getenv("QUE_ACTIVITY_TOKEN") or None,
         )
 
 

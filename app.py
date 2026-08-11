@@ -76,6 +76,24 @@ def _guard(cookie: str | None) -> None:
         raise HTTPException(status_code=401, detail="Not signed in.")
 
 
+def _bearer_ok(request: Request) -> bool:
+    """Machine-to-machine auth: `Authorization: Bearer <CRON_SECRET>`.
+
+    Lets a trusted caller (e.g. the Que app the owner has connected this tracker
+    to) trigger a sync and read the snapshot without the owner cookie. Same
+    secret the scheduled cron uses; unset ⇒ no machine access.
+    """
+    if not CRON_SECRET:
+        return False
+    return secrets.compare_digest(
+        request.headers.get("authorization", ""), f"Bearer {CRON_SECRET}")
+
+
+def _guard_owner_or_bearer(request: Request, cookie: str | None) -> None:
+    if not (_authed(cookie) or _bearer_ok(request)):
+        raise HTTPException(status_code=401, detail="Not signed in.")
+
+
 # Shareable, but not searchable: a link you hand to a friend shouldn't turn up
 # in results for your name.
 _NOINDEX = "noindex, nofollow"
@@ -156,17 +174,32 @@ def index(request: Request, weeks: int = 16,
 
 
 @app.get("/api/snapshot")
-def snapshot(progression_auth: str | None = Cookie(None)) -> JSONResponse:
-    _guard(progression_auth)
+def snapshot(request: Request,
+            progression_auth: str | None = Cookie(None)) -> JSONResponse:
+    _guard_owner_or_bearer(request, progression_auth)
     return JSONResponse(handoff.build_snapshot())
 
 
 def _run_sync(days: int) -> dict:
-    """Shared by the button and the cron job."""
+    """Shared by the button and the cron job.
+
+    After pulling from Garmin, best-effort forward the new cardio to the owner's
+    Que log if QUE_ACTIVITY_URL/TOKEN are set — so one sync updates both the
+    tracker and Que. A missing Que config is silent; a push failure is reported
+    in the summary but never fails the sync itself.
+    """
     from garmin_tracker.sync import _no_prompt, run_sync
 
     db.init_db()
     summary = run_sync(days=days, mfa_prompt=_no_prompt)
+    try:
+        from garmin_tracker.que_push import QueNotConfigured, push_activities
+        try:
+            summary["que"] = push_activities(days=days)
+        except QueNotConfigured:
+            pass
+    except Exception as e:  # noqa: BLE001 — never let a push break the sync
+        summary["que_error"] = f"{type(e).__name__}: {e}"
     return summary
 
 
@@ -190,9 +223,9 @@ def _run_sync_details(limit: int) -> dict:
 
 
 @app.post("/api/sync")
-def sync(days: int | None = None,
+def sync(request: Request, days: int | None = None,
          progression_auth: str | None = Cookie(None)) -> JSONResponse:
-    _guard(progression_auth)
+    _guard_owner_or_bearer(request, progression_auth)
     from garmin_tracker.sync import MFARequired
 
     try:

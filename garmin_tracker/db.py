@@ -209,6 +209,10 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         # Durability: HR drift vs. output over a long session, in %.
         # Populated by ``track.py sync-details``; NULL until then.
         "decoupling_pct": "REAL",
+        # ISO timestamp when this activity was pushed to the Que app
+        # (``track.py push-que``). NULL = not sent yet, so a normal push only
+        # forwards new activities. The Que server also dedups on externalId.
+        "que_pushed_at": "TEXT",
     },
 }
 
