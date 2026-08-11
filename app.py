@@ -180,13 +180,16 @@ def snapshot(request: Request,
     return JSONResponse(handoff.build_snapshot())
 
 
-def _run_sync(days: int) -> dict:
+def _run_sync(days: int, resend: bool = False) -> dict:
     """Shared by the button and the cron job.
 
     After pulling from Garmin, best-effort forward the new cardio to the owner's
     Que log if QUE_ACTIVITY_URL/TOKEN are set — so one sync updates both the
     tracker and Que. A missing Que config is silent; a push failure is reported
     in the summary but never fails the sync itself.
+
+    ``resend=True`` re-POSTs already-pushed activities too, so Que can BACKFILL
+    fields added after they were first imported (e.g. measured calories).
     """
     from garmin_tracker.sync import _no_prompt, run_sync
 
@@ -195,7 +198,7 @@ def _run_sync(days: int) -> dict:
     try:
         from garmin_tracker.que_push import QueNotConfigured, push_activities
         try:
-            summary["que"] = push_activities(days=days)
+            summary["que"] = push_activities(days=days, resend=resend)
         except QueNotConfigured:
             pass
     except Exception as e:  # noqa: BLE001 — never let a push break the sync
@@ -223,13 +226,13 @@ def _run_sync_details(limit: int) -> dict:
 
 
 @app.post("/api/sync")
-def sync(request: Request, days: int | None = None,
+def sync(request: Request, days: int | None = None, resend: bool = False,
          progression_auth: str | None = Cookie(None)) -> JSONResponse:
     _guard_owner_or_bearer(request, progression_auth)
     from garmin_tracker.sync import MFARequired
 
     try:
-        return JSONResponse(_run_sync(days or SYNC_DAYS))
+        return JSONResponse(_run_sync(days or SYNC_DAYS, resend=resend))
     except MFARequired as e:
         # 409: the request was fine, the stored credentials just aren't usable
         # without a human. Seed tokens locally and re-upload.
