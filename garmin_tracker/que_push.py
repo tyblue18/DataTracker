@@ -60,10 +60,9 @@ def activity_to_payload(row: dict) -> dict | None:
     if minutes <= 0:
         return None
 
+    # Distance is optional for every type — indoor rides / treadmill sessions
+    # often have none. Time + measured calories is all Que needs for those.
     dist_m = _num(row.get("distance_m"))
-    # The server requires a distance for run & bike; swim may be time-only.
-    if qtype in ("run", "bike") and dist_m <= 0:
-        return None
 
     payload: dict = {
         "type": qtype,

@@ -54,12 +54,17 @@ def test_other_sport_is_skipped():
     }) is None
 
 
-def test_run_without_distance_is_skipped():
-    # server rejects a run/bike with no distance, so we skip it client-side
-    assert activity_to_payload({
-        "activity_id": 6, "sport": "run", "date": "2026-08-01",
-        "distance_m": 0, "duration_s": 600,
-    }) is None
+def test_distance_less_indoor_ride_is_sent_time_only():
+    # Indoor rides often carry no distance — send time (+ calories when present)
+    # instead of dropping the workout.
+    p = activity_to_payload({
+        "activity_id": 6, "sport": "bike", "date": "2026-08-01",
+        "distance_m": 0, "duration_s": 1920,
+        "calories": 228, "bmr_calories": 44,
+    })
+    assert p["type"] == "bike" and p["time"] == 32.0
+    assert "distance" not in p
+    assert p["calories"] == 184
 
 
 def test_zero_duration_is_skipped():
