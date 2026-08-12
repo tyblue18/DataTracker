@@ -140,8 +140,18 @@ if (btn) btn.addEventListener('click', async () => {
     const r = await fetch('/api/sync', { method: 'POST' });
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-    out.textContent = `Synced ${j.activities} activities · ${j.wellness_days} wellness days. Reloading…`;
-    setTimeout(() => location.reload(), 900);
+    // What matters is whether anything arrived. Reporting the window count
+    // alone made a sync that found nothing look the same as one that found a
+    // session, which reads as "the button is broken".
+    const fresh = (j.new_activities || 0) + (j.wellness_days || 0);
+    if (fresh === 0) {
+      out.textContent = `Up to date — Garmin had nothing new (${j.activities} sessions in the last ${j.days || 7} days).`;
+      btn.disabled = false;
+      btn.textContent = original;
+    } else {
+      out.textContent = `${j.new_activities} new activities · ${j.wellness_days} wellness days updated. Reloading…`;
+      setTimeout(() => location.reload(), 900);
+    }
   } catch (e) {
     out.textContent = 'Sync failed: ' + e.message;
     btn.disabled = false;

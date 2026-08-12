@@ -122,18 +122,33 @@ def parse_activity(a: dict) -> dict:
     return row
 
 
-def sync_activities(garmin, start: date, end: date, conn) -> int:
+def sync_activities(garmin, start: date, end: date, conn) -> dict:
+    """Upsert every activity in the window; report how many were actually new.
+
+    The window count on its own is misleading feedback for a sync button: it
+    reports how many sessions the last N days contain, which barely moves, so a
+    sync that fetched nothing new looks identical to one that fetched a race.
+    Checking which ids were already stored costs one query and makes the
+    difference visible.
+    """
     activities = garmin.get_activities_by_date(
         start.isoformat(), end.isoformat()
     )
-    count = 0
-    for a in activities or []:
-        row = parse_activity(a)
-        if row["activity_id"] is None:
-            continue
+    rows = [r for r in (parse_activity(a) for a in activities or [])
+            if r["activity_id"] is not None]
+
+    known: set = set()
+    if rows:
+        ids = [r["activity_id"] for r in rows]
+        marks = ", ".join(["?"] * len(ids))
+        known = {r[0] for r in conn.execute(
+            db._ph(f"SELECT activity_id FROM activities "
+                   f"WHERE activity_id IN ({marks})"), ids).fetchall()}
+
+    for row in rows:
         db.upsert_activity(conn, row)
-        count += 1
-    return count
+    return {"seen": len(rows),
+            "new": sum(1 for r in rows if r["activity_id"] not in known)}
 
 
 # --------------------------------------------------------------------------- #
@@ -398,17 +413,21 @@ def run_sync(days: int = 30, activities_only: bool = False,
     start = end - timedelta(days=max(0, days - 1))
 
     summary = {"start": start.isoformat(), "end": end.isoformat(),
-               "activities": 0, "wellness_days": 0}
+               "days": days, "activities": 0, "new_activities": 0,
+               "wellness_days": 0}
 
     with db.connect() as conn:
         if not wellness_only:
-            summary["activities"] = sync_activities(garmin, start, end, conn)
+            counts = sync_activities(garmin, start, end, conn)
+            summary["activities"] = counts["seen"]
+            summary["new_activities"] = counts["new"]
         if not activities_only:
             summary["wellness_days"] = sync_wellness(
                 garmin, start, end, conn, full=full, progress=progress)
         db.log_sync(
             conn, "sync",
-            f"{summary['activities']} activities, "
+            f"{summary['activities']} activities "
+            f"({summary['new_activities']} new), "
             f"{summary['wellness_days']} wellness days "
             f"({start} -> {end})",
             datetime.now().isoformat(timespec="seconds"),
