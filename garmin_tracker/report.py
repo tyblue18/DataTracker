@@ -86,6 +86,9 @@ button{{font-family:inherit}}
      font-weight:700;font-size:13px;padding:8px 16px;cursor:pointer}}
 .btn:hover{{background:{viz.ACCENT_2}}}
 .btn:disabled{{opacity:.55;cursor:progress}}
+.btn-ghost{{background:none;color:{viz.MUTED_2};border:1px solid {viz.HAIR};
+           font-weight:600;padding:7px 14px}}
+.btn-ghost:hover{{background:{viz.CARD};color:{viz.INK}}}
 .g2{{grid-template-columns:1fr 1fr}}
 .g4{{grid-template-columns:repeat(4,1fr)}}
 .g5{{grid-template-columns:repeat(5,1fr)}}
@@ -152,7 +155,8 @@ if (btn) btn.addEventListener('click', async () => {
 # Sections
 # ---------------------------------------------------------------------------
 
-def _header(stale: int | None, race: dict | None, show_sync: bool) -> str:
+def _header(stale: int | None, race: dict | None, show_sync: bool,
+            sign_in_url: str | None = None) -> str:
     sync_color = viz.STATUS["good"] if stale == 0 else viz.STATUS["warning"]
     sync_label = ("Synced today" if stale == 0 else
                   f"{stale} days stale" if stale is not None else "No data")
@@ -164,10 +168,17 @@ def _header(stale: int | None, race: dict | None, show_sync: bool) -> str:
             f'{viz.tint(viz.ACCENT, .35)};border-radius:999px;padding:7px 14px;'
             f'font-size:12.5px;color:{viz.ACCENT_2};font-weight:600">'
             f'⏱ {race["days"]} days to {esc(race["name"])}</div>')
+    # Signed in: the button. Served by the app but not signed in: the way to
+    # get the button — without this the header is simply empty and there is
+    # nothing on the page hinting that /login exists. A static report gets
+    # neither, since it has no server to talk to.
     sync_btn = ""
     if show_sync:
         sync_btn = ('<button class="btn" id="syncBtn">⟳ Sync now</button>'
                     '<span id="syncMsg" class="muted"></span>')
+    elif sign_in_url:
+        sync_btn = (f'<a class="btn btn-ghost" href="{esc(sign_in_url)}">'
+                    'Sign in to sync</a>')
     return f"""
 <div style="display:flex;align-items:center;justify-content:space-between;
      gap:16px;padding:26px 0 10px;flex-wrap:wrap">
@@ -611,8 +622,13 @@ def _disciplines(bal: pd.DataFrame, wv: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 
 def render(weeks: int = 16, through: pd.Timestamp | None = None,
-           show_sync: bool = True) -> str:
-    """Build the whole page. Reads the database; makes no network calls."""
+           show_sync: bool = True, sign_in_url: str | None = None) -> str:
+    """Build the whole page. Reads the database; makes no network calls.
+
+    ``show_sync`` puts the Sync now button in the header; ``sign_in_url`` is the
+    fallback for a served page whose viewer isn't signed in yet, and is ignored
+    when the button is already there.
+    """
     db.init_db()
     activities = db.load_activities()
     daily = db.load_daily()
@@ -627,7 +643,7 @@ def render(weeks: int = 16, through: pd.Timestamp | None = None,
         body = card('<div class="muted">No data yet. Run '
                     '<code>python track.py sync</code> locally, or hit Sync above '
                     'once Garmin tokens are configured.</div>')
-        return _page(_header(None, None, show_sync) + body)
+        return _page(_header(None, None, show_sync, sign_in_url) + body)
 
     acts = activities[activities["date"] >= cutoff]
     day = daily[daily["date"] >= cutoff] if not daily.empty else daily
@@ -656,7 +672,7 @@ def render(weeks: int = 16, through: pd.Timestamp | None = None,
             f"{charts._short_day(last_any)} · generated {asof:%d %b %Y}")
 
     body = (
-        _header(stale, race, show_sync)
+        _header(stale, race, show_sync, sign_in_url)
         + _flags(metrics.training_flags(activities, daily, sleep, through=asof,
                                         tags=tags))
         + _overview(metrics.progression_score(

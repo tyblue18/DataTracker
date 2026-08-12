@@ -72,6 +72,14 @@ def test_public_page_hides_the_sync_button(client):
     assert SYNC_BUTTON in c.get("/").text
 
 
+def test_public_page_offers_the_way_to_the_sync_button(client):
+    """Hiding the button is right; hiding /login too leaves no way in."""
+    c, _ = client
+    assert 'href="/login"' in c.get("/").text
+    c.post("/login", data={"password": "hunter2"})
+    assert 'href="/login"' not in c.get("/").text
+
+
 def test_public_page_is_cacheable_and_the_owners_is_not(client):
     c, _ = client
     assert "public" in c.get("/").headers["cache-control"]
@@ -152,7 +160,7 @@ def test_weeks_parameter_is_clamped(client, monkeypatch):
     c.post("/login", data={"password": "hunter2"})
     seen = {}
 
-    def fake_render(weeks, show_sync):
+    def fake_render(weeks, show_sync, sign_in_url):
         seen["weeks"] = weeks
         return "<html>ok</html>"
 

@@ -122,7 +122,9 @@ curl https://your-app.vercel.app/api/health
 
 - **Button** — *Sync now* in the header POSTs to `/api/sync`, pulls the last
   `SYNC_DAYS` days, and reloads. Days already stored are skipped, so a routine
-  sync is a handful of requests and a few seconds. Only visible when signed in.
+  sync is a handful of requests and a few seconds. Only visible when signed in;
+  until then the header carries a *Sign in to sync* link to `/login` instead, so
+  you can always get to the button from the page itself.
 - **Cron** — `vercel.json` runs `/api/cron/sync` daily at 06:00 UTC, which is
   what keeps the page fresh for everyone else, and `/api/cron/sync-details` at
   06:30 for aerobic decoupling.

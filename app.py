@@ -161,8 +161,11 @@ def index(request: Request, weeks: int = 16,
         return RedirectResponse("/login", status_code=303)
 
     # The sync button is the one owner-only thing on the page. Visitors get the
-    # identical dashboard without it.
-    html = report.render(weeks=max(1, min(weeks, 104)), show_sync=owner)
+    # identical dashboard without it — but with a way in, because otherwise
+    # there is nothing anywhere on the page telling you /login exists and the
+    # button looks like it was never built.
+    html = report.render(weeks=max(1, min(weeks, 104)), show_sync=owner,
+                         sign_in_url=None if owner else "/login")
 
     # Rendering reads the database on every request. Visitors all see the same
     # page, so let the CDN absorb repeat views; the owner's copy carries a
