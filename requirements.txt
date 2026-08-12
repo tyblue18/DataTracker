@@ -5,7 +5,7 @@
 # for the test suite and the optional Streamlit app.
 
 # Garmin data access (same library the Taxuspt/garmin_mcp server uses under the hood)
-garminconnect>=0.2.25
+garminconnect>=0.3.10
 garth>=0.5.0
 
 # Storage / analysis

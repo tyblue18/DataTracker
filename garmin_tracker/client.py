@@ -110,16 +110,18 @@ def connect(mfa_prompt=input, persist: bool | None = None) -> Garmin:
             "set. Copy .env.example to .env and fill in your credentials."
         )
 
+    # prompt_mfa (not return_on_mfa): the rewritten garminconnect (>=0.3.x,
+    # garth-free) DISABLES its poisoned-token self-recovery when
+    # return_on_mfa=True — a stale cached token then 401s with "Failed to
+    # retrieve social profile" instead of triggering a fresh credential login.
+    # The prompt_mfa callback path keeps recovery enabled and still supports
+    # non-interactive contexts (the callback can raise, e.g. MFARequired).
     garmin = Garmin(
         email=settings.email,
         password=settings.password,
-        return_on_mfa=True,
+        prompt_mfa=lambda: mfa_prompt("Enter the Garmin MFA code sent to you: ").strip(),
     )
-    result1, result2 = garmin.login()
-
-    if result1 == "needs_mfa":
-        code = mfa_prompt("Enter the Garmin MFA code sent to you: ").strip()
-        garmin.resume_login(result2, code)
+    garmin.login()
 
     # Cache tokens for next time. On a read-only serverless filesystem the
     # normal store can't be created, so fall back to a temp directory — the

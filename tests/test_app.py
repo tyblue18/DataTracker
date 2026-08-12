@@ -169,7 +169,7 @@ def test_sync_returns_the_summary(client, monkeypatch):
     c, mod = client
     c.post("/login", data={"password": "hunter2"})
     monkeypatch.setattr(mod, "_run_sync",
-                        lambda days: {"activities": 3, "wellness_days": 7})
+                        lambda days, resend=False: {"activities": 3, "wellness_days": 7})
     r = c.post("/api/sync")
     assert r.status_code == 200
     assert r.json()["activities"] == 3
@@ -182,7 +182,7 @@ def test_sync_reports_mfa_as_409_not_500(client, monkeypatch):
     c, mod = client
     c.post("/login", data={"password": "hunter2"})
 
-    def boom(days):
+    def boom(days, resend=False):
         raise MFARequired("needs a code")
 
     monkeypatch.setattr(mod, "_run_sync", boom)
