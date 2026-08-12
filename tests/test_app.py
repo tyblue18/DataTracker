@@ -87,6 +87,15 @@ def test_public_page_is_cacheable_and_the_owners_is_not(client):
     assert "no-store" in c.get("/").headers["cache-control"]
 
 
+def test_page_varies_on_cookie(client):
+    """Without this the CDN answers the owner from the visitor's cached copy,
+    the function never runs, and the sync button can never appear."""
+    c, _ = client
+    assert c.get("/").headers["vary"] == "Cookie"
+    c.post("/login", data={"password": "hunter2"})
+    assert c.get("/").headers["vary"] == "Cookie"
+
+
 def test_page_is_not_search_indexable(client):
     c, _ = client
     assert c.get("/").headers["x-robots-tag"] == "noindex, nofollow"

@@ -170,10 +170,18 @@ def index(request: Request, weeks: int = 16,
     # Rendering reads the database on every request. Visitors all see the same
     # page, so let the CDN absorb repeat views; the owner's copy carries a
     # button nobody else may use, so it must never be cached and handed out.
+    #
+    # Vary is what makes those two statements compatible. Without it the edge
+    # keys purely on the URL, so the owner's signed-in request is answered from
+    # the visitor's cached copy and the function never runs — the sync button
+    # silently never appears, no matter how many times you sign in. Declaring
+    # Cookie puts the owner on their own cache key, where `private, no-store`
+    # then applies. Visitors send no cookie, so they still share one entry and
+    # still get hits.
     cache = ("private, no-store" if owner else
              "public, max-age=0, s-maxage=60, stale-while-revalidate=300")
     return HTMLResponse(html, headers={
-        "Cache-Control": cache, "X-Robots-Tag": _NOINDEX})
+        "Cache-Control": cache, "Vary": "Cookie", "X-Robots-Tag": _NOINDEX})
 
 
 @app.get("/api/snapshot")
