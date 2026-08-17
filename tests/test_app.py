@@ -261,6 +261,43 @@ def test_health_is_public_and_reports_config(client):
     assert body["storage"] in ("sqlite", "postgres")
 
 
+def test_health_reports_whether_the_que_push_is_configured(client, monkeypatch):
+    """A deployment without the Que env vars syncs fine but forwards nothing —
+    health is where that has to show up, or it looks like a broken button."""
+    from types import SimpleNamespace
+
+    c, mod = client
+    monkeypatch.setattr(mod, "settings", SimpleNamespace(
+        que_activity_url="https://que.example/api/health/activity",
+        que_activity_token="tok"))
+    assert c.get("/api/health").json()["que_push_configured"] is True
+
+    monkeypatch.setattr(mod, "settings", SimpleNamespace(
+        que_activity_url=None, que_activity_token=None))
+    assert c.get("/api/health").json()["que_push_configured"] is False
+
+
+def test_sync_summary_names_a_missing_que_config(client, monkeypatch):
+    """QueNotConfigured must not be silent — the summary says what to set."""
+    import garmin_tracker.que_push as que_mod
+    import garmin_tracker.sync as sync_mod
+
+    c, mod = client
+    c.post("/login", data={"password": "hunter2"})
+    monkeypatch.setattr(mod.db, "init_db", lambda: None)
+    monkeypatch.setattr(sync_mod, "run_sync",
+                        lambda days, mfa_prompt: {"activities": 1,
+                                                  "new_activities": 1,
+                                                  "wellness_days": 0})
+
+    def not_configured(days, resend=False):
+        raise que_mod.QueNotConfigured("unset")
+
+    monkeypatch.setattr(que_mod, "push_activities", not_configured)
+    body = c.post("/api/sync").json()
+    assert "QUE_ACTIVITY_URL" in body["que"]
+
+
 # --- Details sync (aerobic decoupling backfill) ------------------------------
 
 def test_details_sync_requires_auth(client):

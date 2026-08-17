@@ -37,6 +37,7 @@ from fastapi import Cookie, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from garmin_tracker import db, handoff, report, viz
+from garmin_tracker.config import settings
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -196,8 +197,10 @@ def _run_sync(days: int, resend: bool = False) -> dict:
 
     After pulling from Garmin, best-effort forward the new cardio to the owner's
     Que log if QUE_ACTIVITY_URL/TOKEN are set — so one sync updates both the
-    tracker and Que. A missing Que config is silent; a push failure is reported
-    in the summary but never fails the sync itself.
+    tracker and Que. A missing Que config is *named* in the summary rather than
+    silent — a deployment without the env vars otherwise reports success while
+    nothing ever reaches Que, which reads as "the sync button is broken". A push
+    failure is reported in the summary but never fails the sync itself.
 
     ``resend=True`` re-POSTs already-pushed activities too, so Que can BACKFILL
     fields added after they were first imported (e.g. measured calories).
@@ -211,7 +214,8 @@ def _run_sync(days: int, resend: bool = False) -> dict:
         try:
             summary["que"] = push_activities(days=days, resend=resend)
         except QueNotConfigured:
-            pass
+            summary["que"] = ("not configured — set QUE_ACTIVITY_URL and "
+                              "QUE_ACTIVITY_TOKEN to auto-log cardio in Que")
     except Exception as e:  # noqa: BLE001 — never let a push break the sync
         summary["que_error"] = f"{type(e).__name__}: {e}"
     return summary
@@ -330,6 +334,10 @@ def health() -> JSONResponse:
         "password_set": bool(APP_PASSWORD),
         "sync_available": bool(APP_PASSWORD) or not IS_PROD,
         "cron_secret_set": bool(CRON_SECRET),
+        # The Que push is best-effort and quiet, so this is the one place that
+        # tells you whether a deployment can forward workouts to Que at all.
+        "que_push_configured": bool(settings.que_activity_url
+                                    and settings.que_activity_token),
         "garmin_tokens": tokens,
         "counts": counts,
         "error": err,

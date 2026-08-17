@@ -88,6 +88,8 @@ In **Project → Settings → Environment Variables**:
 | `SYNC_DAYS` | `7` | How far back each sync looks. |
 | `DETAILS_LIMIT` | `25` | Sessions the decoupling backfill fetches per run. One Garmin request each. |
 | `PUBLIC_DASHBOARD` | *(omit)* | Defaults to public. Set `0` to require the password for the whole page. |
+| `QUE_ACTIVITY_URL` | `https://<your-que-app>/api/health/activity` | Auto-log synced cardio (and its calories) in Que's calendar/metrics. **Without both Que vars the sync still reports success but nothing reaches Que.** |
+| `QUE_ACTIVITY_TOKEN` | Que → Metrics → "Auto-sync from your watch" → Copy token | Same. |
 
 `DATABASE_URL` is set for you by the Neon integration.
 
@@ -108,13 +110,15 @@ curl https://your-app.vercel.app/api/health
 ```json
 {"ok": true, "storage": "postgres", "public_dashboard": true,
  "password_set": true, "sync_available": true, "cron_secret_set": true,
- "garmin_tokens": 1, "counts": {"activities": 55}}
+ "que_push_configured": true, "garmin_tokens": 1, "counts": {"activities": 55}}
 ```
 
 - `storage: "sqlite"` → `DATABASE_URL` isn't reaching the function; the page
   will look empty because it's reading a database that doesn't exist.
 - `garmin_tokens: 0` → step 2 did not land, and sync will fail with a 409.
 - `sync_available: false` → `APP_PASSWORD` isn't set.
+- `que_push_configured: false` → syncs work but workouts are never forwarded
+  to Que; set `QUE_ACTIVITY_URL` and `QUE_ACTIVITY_TOKEN`.
 
 ---
 
