@@ -64,8 +64,8 @@ def cmd_sync_que(args) -> None:
 
 
 def cmd_push_que(args) -> None:
-    """Push Garmin cardio (run/bike/swim) into the Que app."""
-    from garmin_tracker.que_push import QueNotConfigured, push_activities
+    """Push Garmin cardio + daily wellness into the Que app."""
+    from garmin_tracker.que_push import QueNotConfigured, push_activities, push_wellness
 
     days = getattr(args, "days", 30) or 30
     resend = getattr(args, "resend", False)
@@ -76,6 +76,9 @@ def cmd_push_que(args) -> None:
         return
     print(f"Que push: {s['sent']} sent, {s['skipped']} skipped, {s['failed']} failed "
           f"(of {s['considered']} in the last {days} days).")
+    w = push_wellness(days=days)
+    print(f"Que wellness: {w['sent']} sent, {w['skipped']} skipped, {w['failed']} failed "
+          f"(of {w['considered']} days).")
 
 
 def cmd_sync_details(args) -> None:

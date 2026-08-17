@@ -210,9 +210,10 @@ def _run_sync(days: int, resend: bool = False) -> dict:
     db.init_db()
     summary = run_sync(days=days, mfa_prompt=_no_prompt)
     try:
-        from garmin_tracker.que_push import QueNotConfigured, push_activities
+        from garmin_tracker.que_push import QueNotConfigured, push_activities, push_wellness
         try:
             summary["que"] = push_activities(days=days, resend=resend)
+            summary["que_wellness"] = push_wellness(days=days)
         except QueNotConfigured:
             summary["que"] = ("not configured — set QUE_ACTIVITY_URL and "
                               "QUE_ACTIVITY_TOKEN to auto-log cardio in Que")

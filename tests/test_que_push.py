@@ -1,8 +1,8 @@
-"""Unit tests for the Garmin -> Que cardio push mapping (pure function)."""
+"""Unit tests for the Garmin -> Que push mappings (pure functions)."""
 
 from __future__ import annotations
 
-from garmin_tracker.que_push import activity_to_payload
+from garmin_tracker.que_push import activity_to_payload, wellness_to_payload
 
 
 def test_run_maps_metres_and_seconds_to_km_and_minutes():
@@ -98,3 +98,27 @@ def test_no_calories_key_when_active_is_zero_or_missing():
         "distance_m": 5000, "moving_s": 1500,  # no calorie fields
     })
     assert "calories" not in p
+
+
+# --- Daily wellness ----------------------------------------------------------
+
+def test_wellness_maps_daily_and_sleep_rows():
+    p = wellness_to_payload(
+        {"date": "2026-08-12", "steps": 9200.0, "weight_kg": 81.8,
+         "resting_hr": 47.0, "hrv_overnight": 62.0, "body_battery_high": 88.0},
+        {"date": "2026-08-12", "sleep_score": 81.0, "total_sleep_s": 26520.0},
+    )
+    assert p == {
+        "date": "2026-08-12", "steps": 9200, "weightLb": 180.3,
+        "restingHr": 47, "hrv": 62, "bodyBattery": 88,
+        "sleepScore": 81, "sleepMin": 442,
+    }
+
+
+def test_wellness_omits_missing_fields_and_tolerates_no_sleep_row():
+    p = wellness_to_payload({"date": "2026-08-12", "steps": 4300.0}, None)
+    assert p == {"date": "2026-08-12", "steps": 4300}
+
+
+def test_wellness_day_with_nothing_useful_is_skipped():
+    assert wellness_to_payload({"date": "2026-08-12", "steps": 0.0}, None) is None

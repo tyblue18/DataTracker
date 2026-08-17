@@ -19,12 +19,30 @@ from Que -> Metrics tab -> "Auto-sync from your watch" -> Copy token).
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 import requests
 
 from . import db
 from .config import settings
+
+LB_PER_KG = 2.2046226218
+
+
+def _post_with_retry(sess: requests.Session, url: str, payload: dict,
+                     attempts: int = 5, backoff_s: float = 8.0) -> requests.Response:
+    """POST, waiting out Que's per-minute rate limit instead of failing.
+
+    Backfills sweep weeks of history in one run; without this every request past
+    the sliding-window limit 429s and the operator has to hand-throttle.
+    """
+    for i in range(attempts):
+        resp = sess.post(url, json=payload, timeout=20)
+        if resp.status_code != 429 or i == attempts - 1:
+            return resp
+        time.sleep(backoff_s)
+    return resp
 
 # Garmin's normalised sport -> Que activity type. Anything else ('other':
 # strength, yoga, walk, ...) is skipped — the endpoint only models these three.
@@ -137,7 +155,7 @@ def push_activities(days: int = 30, resend: bool = False) -> dict:
                 skipped += 1
                 continue
             try:
-                resp = sess.post(url, json=payload, timeout=20)
+                resp = _post_with_retry(sess, url, payload)
             except requests.RequestException as e:
                 failed += 1
                 print(f"  x {payload['externalId']}: {e}")
@@ -159,3 +177,97 @@ def push_activities(days: int = 30, resend: bool = False) -> dict:
                     f"{sent} sent, {skipped} skipped, {failed} failed", now)
 
     return {"sent": sent, "skipped": skipped, "failed": failed, "considered": len(rows)}
+
+
+# ── Daily wellness (steps, weight, recovery metrics) ──────────────────────────
+
+def wellness_to_payload(daily: dict, sleep: dict | None) -> dict | None:
+    """Map one daily_metrics row (+ its sleep row) to /api/health/wellness.
+
+    Only fields with real values are sent; a day with nothing useful returns
+    None. Weight converts kg → lb (Que's canonical unit). PURE.
+    """
+    p: dict = {"date": str(daily.get("date"))[:10]}
+    steps = _num(daily.get("steps"))
+    if steps >= 1:
+        p["steps"] = int(steps)
+    weight_kg = _num(daily.get("weight_kg"))
+    if weight_kg > 20:
+        p["weightLb"] = round(weight_kg * LB_PER_KG, 1)
+    rhr = _num(daily.get("resting_hr"))
+    if rhr > 0:
+        p["restingHr"] = round(rhr)
+    hrv = _num(daily.get("hrv_overnight"))
+    if hrv > 0:
+        p["hrv"] = round(hrv)
+    bb = _num(daily.get("body_battery_high"))
+    if bb > 0:
+        p["bodyBattery"] = round(bb)
+    if sleep:
+        score = _num(sleep.get("sleep_score"))
+        if score > 0:
+            p["sleepScore"] = round(score)
+        total_s = _num(sleep.get("total_sleep_s"))
+        if total_s > 0:
+            p["sleepMin"] = round(total_s / 60.0)
+    return p if len(p) > 1 else None  # more than just the date
+
+
+def push_wellness(days: int = 7) -> dict:
+    """POST recent daily wellness to Que's /api/health/wellness.
+
+    The endpoint derives from QUE_ACTIVITY_URL (…/activity → …/wellness), so no
+    extra configuration is needed. Recent days re-push every run — their values
+    change through the day (steps) and land in the morning (sleep/HRV) — and
+    Que's applyWellness no-ops unchanged values server-side.
+    """
+    url, token = settings.que_activity_url, settings.que_activity_token
+    if not url or not token:
+        raise QueNotConfigured(
+            "set QUE_ACTIVITY_URL and QUE_ACTIVITY_TOKEN in .env "
+            "(token: Que -> Metrics -> Auto-sync from your watch -> Copy token)"
+        )
+    wellness_url = url.rstrip("/").removesuffix("/activity") + "/wellness"
+
+    db.init_db()
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with db.connect() as conn:
+        def _rows(table: str) -> dict[str, dict]:
+            cur = conn.execute(
+                db._ph(f"SELECT * FROM {table} WHERE date >= ?"), (since,))
+            names = [d[0] for d in cur.description]
+            out: dict[str, dict] = {}
+            for r in cur.fetchall():
+                row = dict(zip(names, r))
+                out[str(row.get("date"))[:10]] = row
+            return out
+        dailies = _rows("daily_metrics")
+        sleeps  = _rows("sleep")
+
+    sent = skipped = failed = 0
+    with requests.Session() as sess:
+        sess.headers.update(
+            {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        )
+        for date, daily in sorted(dailies.items()):
+            payload = wellness_to_payload(daily, sleeps.get(date))
+            if payload is None:
+                skipped += 1
+                continue
+            try:
+                resp = _post_with_retry(sess, wellness_url, payload)
+            except requests.RequestException as e:
+                failed += 1
+                print(f"  x wellness {date}: {e}")
+                continue
+            if resp.ok:
+                sent += 1
+            else:
+                failed += 1
+                print(f"  x wellness {date}: {resp.status_code} {resp.text[:120]}")
+
+    with db.connect() as conn:
+        db.log_sync(conn, "que-wellness",
+                    f"{sent} sent, {skipped} skipped, {failed} failed",
+                    datetime.now(UTC).isoformat())
+    return {"sent": sent, "skipped": skipped, "failed": failed, "considered": len(dailies)}
