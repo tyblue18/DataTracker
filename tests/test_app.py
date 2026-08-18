@@ -396,3 +396,34 @@ def test_health_reports_a_broken_database_rather_than_zero_tokens(client, monkey
     assert body["ok"] is False
     assert body["garmin_tokens"] is None      # not 0 — we don't know
     assert "connection refused" in body["error"]
+
+
+# --- Que config handover ------------------------------------------------------
+
+def test_que_config_requires_the_bearer_secret(client):
+    c, _ = client
+    r = c.post("/api/que-config", json={"activityUrl": "https://q.app/api/health/activity", "token": "t"})
+    assert r.status_code == 401
+
+
+def test_que_config_stores_the_handed_over_credentials(client, monkeypatch):
+    """The endpoint persists via db.set_config — stubbed so the test never
+    touches a real database file."""
+    c, _ = client
+    stored = {}
+    from garmin_tracker import db as _db
+    monkeypatch.setattr(_db, "set_config", lambda k, v, db_path=None: stored.__setitem__(k, v))
+    r = c.post("/api/que-config",
+               headers={"Authorization": "Bearer cronsecret"},
+               json={"activityUrl": "https://q.app/api/health/activity", "token": "tok123"})
+    assert r.status_code == 200
+    assert stored == {"que_activity_url": "https://q.app/api/health/activity",
+                      "que_activity_token": "tok123"}
+
+
+def test_que_config_rejects_a_non_que_url(client):
+    c, _ = client
+    r = c.post("/api/que-config",
+               headers={"Authorization": "Bearer cronsecret"},
+               json={"activityUrl": "https://evil.example/steal", "token": "t"})
+    assert r.status_code == 400

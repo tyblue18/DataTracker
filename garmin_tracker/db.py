@@ -174,6 +174,16 @@ CREATE TABLE IF NOT EXISTS sync_log (
     kind      TEXT,
     detail    TEXT
 );
+
+-- Small key/value store for app-level configuration that arrives at runtime
+-- rather than via env vars — e.g. the Que push credentials handed over by a
+-- connected Que instance (/api/que-config), so the owner never has to copy
+-- tokens into the deployment settings by hand.
+CREATE TABLE IF NOT EXISTS app_config (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT
+);
 """
 
 # Columns added after the original schema shipped. Applied with ALTER TABLE on
@@ -418,6 +428,33 @@ def load_strength_sets(db_path: Path | None = None) -> pd.DataFrame:
         return pd.read_sql_query(
             "SELECT * FROM strength_sets ORDER BY date", conn, parse_dates=["date"],
         )
+
+
+# --- App config (runtime key/value) ------------------------------------------
+
+def set_config(key: str, value: str, db_path: Path | None = None) -> None:
+    from datetime import datetime
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    init_db(db_path)
+    with connect(db_path) as conn:
+        conn.execute(_ph(
+            "INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at"), (key, value, now))
+
+
+def get_config(key: str, db_path: Path | None = None) -> str | None:
+    """Stored config value, or None. Missing table (pre-migration DB) = None."""
+    try:
+        with connect(db_path) as conn:
+            row = conn.execute(
+                _ph("SELECT value FROM app_config WHERE key = ?"), (key,)).fetchone()
+    except Exception as e:
+        if _is_missing_table(e):
+            return None
+        raise
+    return row[0] if row else None
 
 
 # --- Garmin token store -----------------------------------------------------

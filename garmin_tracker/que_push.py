@@ -50,7 +50,26 @@ _SPORT_TO_TYPE = {"run": "run", "bike": "bike", "swim": "swim"}
 
 
 class QueNotConfigured(RuntimeError):
-    """QUE_ACTIVITY_URL / QUE_ACTIVITY_TOKEN aren't set."""
+    """QUE_ACTIVITY_URL / QUE_ACTIVITY_TOKEN aren't set (env or handed-over config)."""
+
+
+def que_config() -> tuple[str | None, str | None]:
+    """Resolve the Que push endpoint + token: env vars first, then the runtime
+    config a connected Que instance handed over via /api/que-config."""
+    url = settings.que_activity_url or db.get_config("que_activity_url")
+    token = settings.que_activity_token or db.get_config("que_activity_token")
+    return url, token
+
+
+def _require_config() -> tuple[str, str]:
+    url, token = que_config()
+    if not url or not token:
+        raise QueNotConfigured(
+            "set QUE_ACTIVITY_URL and QUE_ACTIVITY_TOKEN in .env, or connect this "
+            "tracker from the Que app (Metrics -> Garmin via Data Tracker), which "
+            "hands the credentials over automatically"
+        )
+    return url, token
 
 
 def _num(x) -> float:
@@ -131,12 +150,7 @@ def push_activities(days: int = 30, resend: bool = False) -> dict:
 
     Raises :class:`QueNotConfigured` if the endpoint/token aren't set.
     """
-    url, token = settings.que_activity_url, settings.que_activity_token
-    if not url or not token:
-        raise QueNotConfigured(
-            "set QUE_ACTIVITY_URL and QUE_ACTIVITY_TOKEN in .env "
-            "(token: Que -> Metrics -> Auto-sync from your watch -> Copy token)"
-        )
+    url, token = _require_config()
 
     db.init_db()
     since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -221,12 +235,7 @@ def push_wellness(days: int = 7) -> dict:
     change through the day (steps) and land in the morning (sleep/HRV) — and
     Que's applyWellness no-ops unchanged values server-side.
     """
-    url, token = settings.que_activity_url, settings.que_activity_token
-    if not url or not token:
-        raise QueNotConfigured(
-            "set QUE_ACTIVITY_URL and QUE_ACTIVITY_TOKEN in .env "
-            "(token: Que -> Metrics -> Auto-sync from your watch -> Copy token)"
-        )
+    url, token = _require_config()
     wellness_url = url.rstrip("/").removesuffix("/activity") + "/wellness"
 
     db.init_db()
@@ -271,3 +280,69 @@ def push_wellness(days: int = 7) -> dict:
                     f"{sent} sent, {skipped} skipped, {failed} failed",
                     datetime.now(UTC).isoformat())
     return {"sent": sent, "skipped": skipped, "failed": failed, "considered": len(dailies)}
+
+
+# ── Batched push (one request per sync) ───────────────────────────────────────
+
+def push_all(days: int = 30, resend: bool = False) -> dict:
+    """Push activities + wellness in ONE request to Que's /api/health/batch.
+
+    Falls back to the per-item pushes when the server doesn't have the batch
+    endpoint yet (older Que deploy → 404/405), so tracker and app can deploy in
+    either order. Returns {"batched": bool, "activities": …, "wellness": …}.
+    """
+    url, token = _require_config()
+    base = url.rstrip("/").removesuffix("/activity")
+    batch_url = base + "/batch"
+
+    db.init_db()
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with db.connect() as conn:
+        act_rows = _rows_since(conn, since, resend)
+        def _kv(table: str) -> dict[str, dict]:
+            cur = conn.execute(db._ph(f"SELECT * FROM {table} WHERE date >= ?"), (since,))
+            names = [d[0] for d in cur.description]
+            return {str(dict(zip(names, r)).get("date"))[:10]: dict(zip(names, r))
+                    for r in cur.fetchall()}
+        dailies = _kv("daily_metrics")
+        sleeps  = _kv("sleep")
+
+    acts = [(row["activity_id"], p) for row in act_rows if (p := activity_to_payload(row))]
+    wellness = [p for date, daily in sorted(dailies.items())
+                if (p := wellness_to_payload(daily, sleeps.get(date)))]
+
+    if not acts and not wellness:
+        return {"batched": True, "activities": {"sent": 0, "skipped": len(act_rows), "failed": 0,
+                                                "considered": len(act_rows)},
+                "wellness": {"sent": 0, "skipped": len(dailies), "failed": 0,
+                             "considered": len(dailies)}}
+
+    with requests.Session() as sess:
+        sess.headers.update({"Authorization": f"Bearer {token}",
+                             "Content-Type": "application/json"})
+        resp = _post_with_retry(sess, batch_url, {
+            "activities": [p for _, p in acts], "wellness": wellness})
+
+    if resp.status_code in (404, 405):
+        # Older Que without the batch endpoint — per-item paths still work.
+        return {"batched": False,
+                "activities": push_activities(days=days, resend=resend),
+                "wellness": push_wellness(days=days)}
+    if not resp.ok:
+        raise RuntimeError(f"batch push failed: {resp.status_code} {resp.text[:140]}")
+
+    now = datetime.now(UTC).isoformat()
+    with db.connect() as conn:
+        if "que_pushed_at" in db._columns(conn, "activities"):
+            for aid, _ in acts:
+                db.update_activity_metrics(conn, aid, {"que_pushed_at": now})
+        body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+        db.log_sync(conn, "que-batch",
+                    f"{len(acts)} activities + {len(wellness)} wellness days in 1 request; "
+                    f"{body.get('changedDays', '?')} days changed", now)
+
+    return {"batched": True,
+            "activities": {"sent": len(acts), "skipped": len(act_rows) - len(acts),
+                           "failed": 0, "considered": len(act_rows)},
+            "wellness": {"sent": len(wellness), "skipped": len(dailies) - len(wellness),
+                         "failed": 0, "considered": len(dailies)}}

@@ -210,13 +210,14 @@ def _run_sync(days: int, resend: bool = False) -> dict:
     db.init_db()
     summary = run_sync(days=days, mfa_prompt=_no_prompt)
     try:
-        from garmin_tracker.que_push import QueNotConfigured, push_activities, push_wellness
+        from garmin_tracker.que_push import QueNotConfigured, push_all
         try:
-            summary["que"] = push_activities(days=days, resend=resend)
-            summary["que_wellness"] = push_wellness(days=days)
+            all_res = push_all(days=days, resend=resend)
+            summary["que"] = all_res["activities"]
+            summary["que_wellness"] = all_res["wellness"]
         except QueNotConfigured:
-            summary["que"] = ("not configured — set QUE_ACTIVITY_URL and "
-                              "QUE_ACTIVITY_TOKEN to auto-log cardio in Que")
+            summary["que"] = ("not configured — connect this tracker from the Que "
+                              "app, or set QUE_ACTIVITY_URL and QUE_ACTIVITY_TOKEN")
     except Exception as e:  # noqa: BLE001 — never let a push break the sync
         summary["que_error"] = f"{type(e).__name__}: {e}"
     return summary
@@ -272,6 +273,42 @@ def sync_details(limit: int | None = None,
     except Exception as e:
         raise HTTPException(status_code=502,
                             detail=f"{type(e).__name__}: {e}") from e
+
+
+def _que_push_configured() -> bool:
+    # Env vars first (the module-level `settings` import is the test seam),
+    # then the runtime config handed over via /api/que-config.
+    if settings.que_activity_url and settings.que_activity_token:
+        return True
+    try:
+        return bool(db.get_config("que_activity_url") and db.get_config("que_activity_token"))
+    except Exception:
+        return False
+
+
+@app.post("/api/que-config")
+async def que_config_set(request: Request) -> JSONResponse:
+    """Receive Que push credentials from a connected Que instance.
+
+    Called by Que's connect flow (and token rotation) with the owner's shared
+    secret, so the owner never copies tokens into deployment env vars by hand.
+    Stored in the database (serverless has no writable disk).
+    """
+    if not _bearer_ok(request):
+        raise HTTPException(status_code=401, detail="Bad secret.")
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON.") from e
+    url = str(body.get("activityUrl") or "").strip()
+    token = str(body.get("token") or "").strip()
+    if not url.startswith("https://") or not url.endswith("/api/health/activity") or not token:
+        raise HTTPException(status_code=400,
+                            detail="Expected {activityUrl: https://…/api/health/activity, token}.")
+    from garmin_tracker import db as _db
+    _db.set_config("que_activity_url", url)
+    _db.set_config("que_activity_token", token)
+    return JSONResponse({"ok": True})
 
 
 def _cron_guard(request: Request) -> None:
@@ -337,8 +374,9 @@ def health() -> JSONResponse:
         "cron_secret_set": bool(CRON_SECRET),
         # The Que push is best-effort and quiet, so this is the one place that
         # tells you whether a deployment can forward workouts to Que at all.
-        "que_push_configured": bool(settings.que_activity_url
-                                    and settings.que_activity_token),
+        # Considers BOTH env vars and the runtime config a connected Que hands
+        # over via /api/que-config.
+        "que_push_configured": _que_push_configured(),
         "garmin_tokens": tokens,
         "counts": counts,
         "error": err,
